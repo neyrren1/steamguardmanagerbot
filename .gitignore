@@ -1,0 +1,19 @@
+# Secrets and local account data
+.env
+.env.*
+!.env.example
+accs.txt
+*.mafile
+*.maFile
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+
+# Runtime artifacts
+*.log
+.th3poli-steamguard/
