@@ -9,9 +9,17 @@ from guardbot.bot.handlers.common import cmd_start_help
 from guardbot.bot.runtime import check_proxy_available, dp, start_trade_check_task, stop_trade_check_task, user_states
 from guardbot.config import logger
 from guardbot.database import AsyncSessionLocal, Mafile, User
+from guardbot.passwords import (
+    MIN_BOT_PASSWORD_LENGTH,
+    PasswordRateLimitError,
+    hash_bot_password_async,
+    password_hash_needs_upgrade,
+    verify_bot_password_async,
+)
 from guardbot.security import decrypt_dict, decrypt_value, encrypt_value
+from guardbot.services.ownership import get_owned_mafile
 from guardbot.services.session_manager import SteamSessionManager
-from guardbot.steam.client import InvalidCredentials, LoginConfirmType, generate_device_id
+from guardbot.steam.client import InvalidCredentials, LoginConfirmType, generate_device_id, redact_proxy_url
 from sqlalchemy import select
 from typing import Dict, Optional
 import asyncio
@@ -595,7 +603,7 @@ async def cmd_proxy_info(message: Message, command: CommandObject):
             decrypted = decrypt_value(mafile.proxy)
             await message.answer(
                 f"🌐 <b>Прокси для {mafile.account_name}:</b>\n"
-                f"🔒 Уникальный:\n<code>{decrypted}</code>",
+                f"🔒 Уникальный:\n<code>{redact_proxy_url(decrypted)}</code>",
                 parse_mode="HTML"
             )
         else:
@@ -607,7 +615,7 @@ async def cmd_proxy_info(message: Message, command: CommandObject):
                 decrypted = decrypt_value(user.general_proxy)
                 await message.answer(
                     f"🌐 <b>Прокси для {mafile.account_name}:</b>\n"
-                    f"🌍 Общий:\n<code>{decrypted}</code>",
+                    f"🌍 Общий:\n<code>{redact_proxy_url(decrypted)}</code>",
                     parse_mode="HTML"
                 )
             else:
@@ -1143,7 +1151,7 @@ async def callback_export_mafile(callback: CallbackQuery):
     mafile_id = int(callback.data.split("_")[2])
 
     async with AsyncSessionLocal() as session:
-        mafile = await session.get(Mafile, mafile_id)
+        mafile = await get_owned_mafile(session, mafile_id, callback.from_user.id)
         if not mafile:
             await callback.answer("Аккаунт не найден", show_alert=True)
             return
@@ -1283,7 +1291,7 @@ async def cmd_set_password(message: Message, command: CommandObject):
         await message.answer(
             "🔑 <b>УСТАНОВКА ПАРОЛЯ</b>\n\n"
             "Отправьте пароль для блокировки бота.\n"
-            "<i>Минимум 4 символа.</i>\n\n"
+            f"<i>Минимум {MIN_BOT_PASSWORD_LENGTH} символов.</i>\n\n"
             "Или используйте:\n"
             "<code>/set_password [пароль]</code>",
             parse_mode="HTML"
@@ -1292,8 +1300,10 @@ async def cmd_set_password(message: Message, command: CommandObject):
 
     password = args[0]
 
-    if len(password) < 4:
-        await message.answer("❌ Пароль должен быть не менее 4 символов")
+    if len(password) < MIN_BOT_PASSWORD_LENGTH:
+        await message.answer(
+            f"❌ Пароль должен быть не менее {MIN_BOT_PASSWORD_LENGTH} символов"
+        )
         return
 
     try:
@@ -1311,11 +1321,11 @@ async def cmd_set_password(message: Message, command: CommandObject):
                 telegram_id=telegram_id,
                 username=message.from_user.username,
                 full_name=message.from_user.full_name,
-                bot_password=encrypt_value(password)
+                bot_password=await hash_bot_password_async(password)
             )
             session.add(user)
         else:
-            user.bot_password = encrypt_value(password)
+            user.bot_password = await hash_bot_password_async(password)
 
         await session.commit()
 
@@ -1413,10 +1423,15 @@ async def cmd_unlock(message: Message, command: CommandObject):
             )
             return
 
-        # Расшифровываем сохраненный пароль
-        decrypted_password = decrypt_value(user.bot_password)
+        try:
+            password_valid = await verify_bot_password_async(
+                user.bot_password, password, user_id=telegram_id
+            )
+        except PasswordRateLimitError:
+            await message.answer("❌ Слишком много попыток. Повторите через минуту.")
+            return
 
-        if password != decrypted_password:
+        if not password_valid:
             await message.answer(
                 "❌ <b>Неверный пароль!</b>\n\n"
                 "Попробуйте еще раз:\n"
@@ -1424,6 +1439,9 @@ async def cmd_unlock(message: Message, command: CommandObject):
                 parse_mode="HTML"
             )
             return
+
+        if password_hash_needs_upgrade(user.bot_password):
+            user.bot_password = await hash_bot_password_async(password)
 
         # Разблокируем — устанавливаем время последней активности
         user.last_activity = datetime.utcnow()

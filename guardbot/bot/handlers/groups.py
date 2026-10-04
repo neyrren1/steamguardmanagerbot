@@ -6,6 +6,7 @@ from guardbot.bot.handlers.accounts import callback_account_settings, callback_s
 from guardbot.bot.handlers.commands import build_mafile_dict
 from guardbot.bot.runtime import dp, user_states
 from guardbot.database import AccountGroup, AsyncSessionLocal, Mafile, User
+from guardbot.services.ownership import get_owned_group, get_owned_mafile
 from sqlalchemy import func, select
 import io
 import json
@@ -19,7 +20,7 @@ async def callback_toggle_pin(callback: CallbackQuery):
     mafile_id = int(callback.data.split("_")[2])
 
     async with AsyncSessionLocal() as session:
-        mafile = await session.get(Mafile, mafile_id)
+        mafile = await get_owned_mafile(session, mafile_id, callback.from_user.id)
         if not mafile:
             await callback.answer("Аккаунт не найден", show_alert=True)
             return
@@ -123,7 +124,7 @@ async def callback_view_group(callback: CallbackQuery):
     page = int(parts[3])
 
     async with AsyncSessionLocal() as session:
-        grp = await session.get(AccountGroup, group_id)
+        grp = await get_owned_group(session, group_id, callback.from_user.id)
         if not grp:
             await callback.answer("Группа не найдена", show_alert=True)
             return
@@ -173,7 +174,7 @@ async def callback_export_group(callback: CallbackQuery):
     telegram_id = callback.from_user.id
 
     async with AsyncSessionLocal() as session:
-        grp = await session.get(AccountGroup, group_id)
+        grp = await get_owned_group(session, group_id, callback.from_user.id)
         if not grp:
             await callback.answer("Группа не найдена", show_alert=True)
             return
@@ -340,7 +341,7 @@ async def callback_confirm_delete_group(callback: CallbackQuery):
     group_id = int(callback.data.split("_")[3])
 
     async with AsyncSessionLocal() as session:
-        grp = await session.get(AccountGroup, group_id)
+        grp = await get_owned_group(session, group_id, callback.from_user.id)
         if not grp:
             await callback.answer("Группа не найдена", show_alert=True)
             return
@@ -361,7 +362,7 @@ async def callback_change_group(callback: CallbackQuery):
     mafile_id = int(callback.data.split("_")[2])
 
     async with AsyncSessionLocal() as session:
-        mafile = await session.get(Mafile, mafile_id)
+        mafile = await get_owned_mafile(session, mafile_id, callback.from_user.id)
         if not mafile:
             await callback.answer("Аккаунт не найден", show_alert=True)
             return
@@ -369,7 +370,7 @@ async def callback_change_group(callback: CallbackQuery):
         # 🔥 Получаем имя группы пока сессия жива
         current_group_name = "Без группы"
         if mafile.group_id:
-            grp = await session.get(AccountGroup, mafile.group_id)
+            grp = await get_owned_group(session, mafile.group_id, callback.from_user.id)
             if grp:
                 current_group_name = grp.name
 
@@ -421,19 +422,21 @@ async def callback_set_group(callback: CallbackQuery):
     group_id = int(parts[3])
 
     async with AsyncSessionLocal() as session:
-        mafile = await session.get(Mafile, mafile_id)
+        mafile = await get_owned_mafile(session, mafile_id, callback.from_user.id)
         if not mafile:
             await callback.answer("Аккаунт не найден", show_alert=True)
             return
 
-        mafile.group_id = group_id if group_id > 0 else None
-        await session.commit()
-
         group_name = "Без группы"
         if group_id > 0:
-            grp = await session.get(AccountGroup, group_id)
-            if grp:
-                group_name = grp.name
+            grp = await get_owned_group(session, group_id, callback.from_user.id)
+            if not grp:
+                await callback.answer("Группа не найдена", show_alert=True)
+                return
+            group_name = grp.name
+
+        mafile.group_id = group_id if group_id > 0 else None
+        await session.commit()
 
     await callback.answer(f"✅ Перемещено в: {group_name}", show_alert=True)
     await callback_account_settings(callback)

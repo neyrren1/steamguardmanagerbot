@@ -11,12 +11,15 @@ from sqlalchemy import text
 from typing import Dict, List, Optional
 from yarl import URL
 import aiohttp
+import asyncio
 import base64
 import hashlib
 import hmac
+import ipaddress
 import io
 import json
 import re
+import socket
 import struct
 import time
 import uuid
@@ -37,37 +40,173 @@ class InvalidSMSCode(Exception): pass
 class AlreadyHasMobileSteamGuard(Exception): pass
 class UnableToGenerateCorrectCodes(Exception): pass
 
+
+class ProxyRequiredError(RuntimeError):
+    """Raised when a Steam network operation has no configured proxy."""
+
 # ============================================================
 # STEAM MOBILE CLIENT - СЕССИЯ (ИСПРАВЛЕННАЯ)
 # ============================================================
 
 USER_AGENT_MOBILE = 'Dalvik/2.1.0 (Linux; U; Android 9; Valve Steam App Version/3)'
+PROXY_DNS_TIMEOUT_SECONDS = 10.0
 
-def parse_proxy_string(proxy_str: str) -> Optional[str]:
+def parse_proxy_string(proxy_str: str | None) -> str | None:
     """
     Проверяет и исправляет формат прокси
-    Поддерживает: http://, https://, socks4://, socks5://
+    Поддерживает: http://, socks4://, socks5://
     """
-    if not proxy_str:
+    if not proxy_str or not proxy_str.strip():
         return None
 
-    # Уже есть протокол
-    if proxy_str.startswith(('http://', 'https://', 'socks4://', 'socks5://')):
-        return proxy_str
+    proxy_str = proxy_str.strip()
 
-    # Определяем тип прокси по порту (эвристика)
-    if ':1080' in proxy_str or ':1081' in proxy_str or ':46281' in proxy_str:
-        proxy_str = 'socks5://' + proxy_str
-        logger.info(f"Auto-detected SOCKS5 proxy: {proxy_str}")
-    elif ':3128' in proxy_str or ':8080' in proxy_str or ':8443' in proxy_str:
-        proxy_str = 'http://' + proxy_str
-        logger.info(f"Auto-detected HTTP proxy: {proxy_str}")
+    if '://' not in proxy_str:
+        # Preserve the legacy SOCKS5 shorthand ports; other ports default to HTTP.
+        port_hint = proxy_str.rsplit(':', 1)[-1]
+        default_scheme = 'socks5' if port_hint in {'1080', '1081', '46281'} else 'http'
+        proxy_str = f'{default_scheme}://{proxy_str}'
+
+    try:
+        parsed = URL(proxy_str)
+        port = parsed.port
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Некорректный URL прокси") from exc
+
+    # aiohttp-socks rejects HTTPS proxy URLs, so fail during validation rather
+    # than later with a confusing connector error.
+    if parsed.scheme not in {'http', 'socks4', 'socks5'}:
+        raise ValueError("Неподдерживаемый протокол прокси")
+    if not parsed.host or port is None or not 1 <= port <= 65535:
+        raise ValueError("Прокси должен содержать хост и корректный порт")
+    if parsed.path not in {'', '/'} or parsed.query_string or parsed.fragment:
+        raise ValueError("URL прокси не должен содержать путь, query или fragment")
+
+    host = parsed.host.rstrip('.').lower()
+    if host == 'localhost' or host.endswith(('.localhost', '.local')):
+        raise ValueError("Локальные адреса нельзя использовать как прокси")
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        address = None
+    if address and not address.is_global:
+        raise ValueError("Приватные и служебные адреса нельзя использовать как прокси")
+
+    return str(parsed)
+
+
+async def resolve_public_proxy_url(proxy_url: str) -> str:
+    """Resolve a proxy once, reject non-global IPs, and pin the connection."""
+    normalized = parse_proxy_string(proxy_url)
+    if normalized is None:
+        raise ProxyRequiredError("Прокси не настроен")
+    parsed = URL(normalized)
+    host = parsed.host
+    if host is None:
+        raise ValueError("Прокси должен содержать хост")
+
+    try:
+        literal_address = ipaddress.ip_address(host)
+    except ValueError:
+        literal_address = None
+    if literal_address is not None:
+        return normalized
+
+    try:
+        results = await asyncio.wait_for(
+            asyncio.get_running_loop().getaddrinfo(
+                host,
+                parsed.port,
+                type=socket.SOCK_STREAM,
+            ),
+            timeout=PROXY_DNS_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError as exc:
+        raise ValueError("Таймаут DNS-разрешения хоста прокси") from exc
+    except OSError as exc:
+        raise ValueError("Не удалось разрешить имя хоста прокси") from exc
+
+    addresses: set[ipaddress.IPv4Address | ipaddress.IPv6Address] = set()
+    for result in results:
+        try:
+            address = ipaddress.ip_address(str(result[4][0]).split("%", 1)[0])
+        except (IndexError, ValueError) as exc:
+            raise ValueError("DNS вернул некорректный адрес прокси") from exc
+        if not address.is_global:
+            raise ValueError("DNS прокси указывает на приватный или служебный адрес")
+        addresses.add(address)
+    if not addresses:
+        raise ValueError("DNS не вернул адрес прокси")
+
+    # Connecting to the chosen address prevents a second DNS lookup and DNS
+    # rebinding between validation and the actual proxy connection.
+    pinned_address = min(addresses, key=lambda address: (address.version, int(address)))
+    return str(parsed.with_host(str(pinned_address)))
+
+
+async def probe_proxy_external_ip(proxy_url: str) -> str:
+    """Test a proxy through a DNS-pinned transport and return its reported IP."""
+    pinned_proxy = await resolve_public_proxy_url(proxy_url)
+    timeout = aiohttp.ClientTimeout(total=30)
+    connector = (
+        ProxyConnector.from_url(pinned_proxy, rdns=True)
+        if pinned_proxy.startswith(("socks5://", "socks4://"))
+        else None
+    )
+    if connector is not None:
+        async with aiohttp.ClientSession(
+            timeout=timeout, connector=connector
+        ) as session:
+            async with session.get("https://api.ipify.org?format=json") as response:
+                response.raise_for_status()
+                body = await response.content.read(4097)
     else:
-        # По умолчанию HTTP
-        proxy_str = 'http://' + proxy_str
-        logger.info(f"Defaulting to HTTP proxy: {proxy_str}")
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(
+                "https://api.ipify.org?format=json", proxy=pinned_proxy
+            ) as response:
+                response.raise_for_status()
+                body = await response.content.read(4097)
+    if len(body) > 4096:
+        raise ValueError("Ответ проверки прокси слишком большой")
+    try:
+        data = json.loads(body)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("Сервис проверки прокси вернул некорректный ответ") from exc
+    external_ip = data.get("ip") if isinstance(data, dict) else None
+    if not isinstance(external_ip, str) or not external_ip or len(external_ip) > 64:
+        raise ValueError("Сервис проверки прокси не вернул IP-адрес")
+    return external_ip
 
-    return proxy_str
+
+def redact_proxy_url(proxy_url: str) -> str:
+    """Return a proxy URL safe for logs and Telegram messages."""
+    parsed = URL(proxy_url)
+    if parsed.password is None:
+        return str(parsed)
+    user = parsed.user or ''
+    credentials = f"{user}:***@" if user else "***@"
+    return f"{parsed.scheme}://{credentials}{parsed.raw_host}:{parsed.port}"
+
+
+def validate_steam_asset_url(asset_url: str) -> str:
+    """Allow only HTTPS resources served by Steam-owned CDN hosts."""
+    try:
+        parsed = URL(asset_url)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Некорректный URL Steam-ресурса") from exc
+
+    host = (parsed.host or '').rstrip('.').lower()
+    trusted_host = host.endswith('.steamstatic.com') or host == 'steamcdn-a.akamaihd.net'
+    if (
+        parsed.scheme != 'https'
+        or not trusted_host
+        or parsed.user is not None
+        or parsed.password is not None
+        or parsed.port not in {443, None}
+    ):
+        raise ValueError("Разрешены только HTTPS URL доверенных Steam CDN")
+    return str(parsed)
 
 # ============================================================
 # STEAM MOBILE CLIENT - СЕССИЯ (ПОЛНАЯ ВЕРСИЯ)
@@ -87,7 +226,18 @@ class AsyncSteamSession:
         self.__steamTimeAligned = False
         self.__steamTimeSyncedWithProxy = False
         self.session: Optional[aiohttp.ClientSession] = None
-        self.cookie_jar = aiohttp.CookieJar()
+        self._proxy_connector: ProxyConnector | None = None
+        self._session_proxy: str | None = None
+        self._cookie_jar: aiohttp.CookieJar | None = None
+
+    @property
+    def cookie_jar(self) -> aiohttp.CookieJar:
+        return self._ensure_cookie_jar()
+
+    def _ensure_cookie_jar(self) -> aiohttp.CookieJar:
+        if self._cookie_jar is None:
+            self._cookie_jar = aiohttp.CookieJar()
+        return self._cookie_jar
 
     async def __aenter__(self):
         await self._ensure_session()
@@ -97,14 +247,18 @@ class AsyncSteamSession:
         await self.close()
 
     async def _ensure_session(self):
+        if not self.proxy:
+            raise ProxyRequiredError(
+                "Прокси не настроен. Сетевые запросы к Steam без прокси запрещены."
+            )
+
         # 🔥 ВСЕГДА пересоздаём сессию, если она без прокси или прокси изменился
         if self.session and not self.session.closed:
-            is_proxy_connector = 'ProxyConnector' in str(type(self.session.connector))
-
-            # Если нет прокси в коннекторе, но self.proxy задан — пересоздаём
-            # Если есть прокси в коннекторе, но self.proxy не задан — пересоздаём
-            if (self.proxy and not is_proxy_connector) or (not self.proxy and is_proxy_connector):
-                logger.info(f"🔄 Прокси изменился, пересоздаю сессию...")
+            if (
+                self.session.connector is not self._proxy_connector
+                or self._session_proxy != self.proxy
+            ):
+                logger.warning("Недоверенная HTTP-сессия заменена на proxy-only сессию")
                 await self.session.close()
                 self.session = None
 
@@ -123,17 +277,15 @@ class AsyncSteamSession:
                 sock_connect=30
             )
 
-            # 🔥 ПРИНУДИТЕЛЬНО используем прокси
-            if self.proxy:
-                logger.info(f"🔧 Создаю ProxyConnector для: {self.proxy}")
-                connector = ProxyConnector.from_url(self.proxy, ssl=False)
-            else:
-                # 🔥 Если прокси нет — ПАДАЕМ С ОШИБКОЙ
-                raise Exception("❌ ПРОКСИ НЕ НАСТРОЕН! Запросы без прокси запрещены.")
+            logger.info("Создаю ProxyConnector для %s", redact_proxy_url(self.proxy))
+            pinned_proxy = await resolve_public_proxy_url(self.proxy)
+            connector = ProxyConnector.from_url(pinned_proxy, rdns=True)
+            self._proxy_connector = connector
+            self._session_proxy = self.proxy
 
             self.session = aiohttp.ClientSession(
                 headers=headers,
-                cookie_jar=self.cookie_jar,
+                cookie_jar=self._ensure_cookie_jar(),
                 connector=connector,
                 timeout=timeout
             )
@@ -143,23 +295,32 @@ class AsyncSteamSession:
         """Закрытие сессии"""
         if self.session and not self.session.closed:
             await self.session.close()
+        self.session = None
+        self._proxy_connector = None
+        self._session_proxy = None
 
-    async def _request(self, method: str, url: str, **kwargs):
+    async def _request(
+        self,
+        method: str,
+        url: str,
+        *,
+        max_response_bytes: int | None = None,
+        **kwargs,
+    ):
         """
         Выполняет HTTP запрос с поддержкой прокси
         """
 
         if not self.proxy:
-            raise Exception("❌ ЗАПРОС БЕЗ ПРОКСИ ЗАПРЕЩЁН!")
+            raise ProxyRequiredError("Сетевые запросы к Steam без прокси запрещены")
 
         await self._ensure_session()
 
-        # Убеждаемся что сессия использует ProxyConnector
-        if 'ProxyConnector' not in str(type(self.session.connector)):
-            raise Exception("❌ Сессия использует обычный коннектор вместо прокси!")
+        if self.session.connector is not self._proxy_connector:
+            raise ProxyRequiredError("HTTP-сессия не привязана к настроенному прокси")
 
         # Логируем прокси
-        logger.info(f"📡 Запрос: {method} {url}, Прокси: {self.proxy}")
+        logger.info("Steam request: %s %s via %s", method, url, redact_proxy_url(self.proxy))
 
         # Правильно добавляем прокси
         # if self.proxy:
@@ -174,12 +335,18 @@ class AsyncSteamSession:
             'Accept': 'application/json, text/plain, */*',
         })
 
-        # Отключаем SSL проверку
-        kwargs['ssl'] = False
-
         try:
             async with self.session.request(method, url, **kwargs) as resp:
-                await resp.read()
+                if max_response_bytes is None:
+                    await resp.read()
+                else:
+                    content_length = resp.content_length
+                    if content_length is not None and content_length > max_response_bytes:
+                        raise ValueError("Ответ Steam CDN превышает допустимый размер")
+                    payload = await resp.content.read(max_response_bytes + 1)
+                    if len(payload) > max_response_bytes:
+                        raise ValueError("Ответ Steam CDN превышает допустимый размер")
+                    resp._body = payload
                 logger.info(f"✅ Ответ: {resp.status} для {url}")
                 return resp
         except Exception as e:
@@ -225,10 +392,12 @@ class AsyncSteamSession:
 
     async def _ensure_sessionid(self):
         """Гарантирует наличие sessionid в cookies"""
+        await self._ensure_session()
+
         # Проверяем, есть ли уже sessionid
         for cookie in self.cookie_jar:
             if cookie.key == 'sessionid' and 'steamcommunity.com' in cookie.get('domain', ''):
-                logger.info(f"✅ [{self.account_name}] sessionid already exists: {cookie.value[:20]}... (expires: {cookie.get('expires', 'session')})")
+                logger.info(f"✅ [{self.account_name}] sessionid already exists")
                 self.session_id = cookie.value
                 return cookie.value
 
@@ -241,28 +410,27 @@ class AsyncSteamSession:
         }
 
         try:
-            async with self.session.get('https://steamcommunity.com/', headers=headers, ssl=False) as resp:
+            async with self.session.get('https://steamcommunity.com/', headers=headers) as resp:
                 logger.info(f"📡 [{self.account_name}] Steam Community response: HTTP {resp.status}")
 
-                text_preview = (await resp.text())[:300]
-                logger.info(f"📄 [{self.account_name}] Response preview: {text_preview}")
+                response_text = await resp.text()
 
                 # Логируем ВСЕ куки которые пришли
                 logger.info(f"🍪 [{self.account_name}] Cookies after request:")
                 new_sessionid = None
                 for cookie in self.cookie_jar:
-                    logger.info(f"   {cookie.key}: {cookie.value[:30]}... (domain: {cookie.get('domain', '')}, expires: {cookie.get('expires', 'session')})")
+                    logger.info(f"   cookie present: {cookie.key} (domain: {cookie.get('domain', '')})")
                     if cookie.key == 'sessionid' and 'steamcommunity.com' in cookie.get('domain', ''):
                         new_sessionid = cookie.value
 
                 if new_sessionid:
-                    logger.info(f"✅ [{self.account_name}] Got NEW sessionid: {new_sessionid[:20]}...")
+                    logger.info(f"✅ [{self.account_name}] Got new sessionid")
                     self.session_id = new_sessionid
                     return new_sessionid
                 else:
                     logger.error(f"❌ [{self.account_name}] sessionid NOT found in response cookies!")
                     # 🔥 Проверяем — может редирект на логин?
-                    if 'login' in text_preview.lower() or 'steam_openid' not in text_preview:
+                    if 'login' in response_text.lower() or 'steam_openid' not in response_text:
                         logger.error(f"🔒 [{self.account_name}] Looks like we got login page instead of community!")
 
         except Exception as e:
@@ -306,6 +474,13 @@ class AsyncSteamSession:
         params = {'steamid': '0'}
 
         logger.info(f"🕐 Начинаю синхронизацию времени. Прокси: {bool(self.proxy)}")
+
+        if not self.proxy:
+            self.__steamTimeAligned = True
+            self.__steamTimeDiff = 0
+            self.__steamTimeSyncedWithProxy = False
+            logger.info("Прокси не настроен: Steam Guard использует только локальное время")
+            return
 
         try:
             resp = await self._request(
@@ -387,9 +562,10 @@ class AsyncSteamSession:
         if not cookies_list:
             return
 
+        cookie_jar = self._ensure_cookie_jar()
         for cookie_dict in cookies_list:
             try:
-                self.cookie_jar.update_cookies(
+                cookie_jar.update_cookies(
                     {cookie_dict['name']: cookie_dict['value']},
                     URL(f"https://{cookie_dict['domain']}")
                 )
@@ -516,12 +692,12 @@ async def finalizelogin(session: AsyncSteamSession, refresh_token: str, steamid:
         try:
             res = await resp.json()
         except:
-            text = await resp.text()
-            logger.error(f"finalizelogin non-JSON response: {text[:500]}")
+            await resp.read()
+            logger.error("finalizelogin returned a non-JSON response")
             return None
 
         if not res.get('success', True):
-            logger.error(f"finalizelogin failed: {res}")
+            logger.error("finalizelogin failed")
             return None
 
         steamID = res.get('steamID')
@@ -665,7 +841,7 @@ class AsyncSteamMobile(AsyncSteamSession):
             url = 'https://steamcommunity.com/my/'
             logger.info(f"🌍 Fetching profile page for country: {url}")
 
-            async with self.session.get(url, headers=headers, ssl=False, allow_redirects=True) as resp:
+            async with self.session.get(url, headers=headers, allow_redirects=True) as resp:
                 if resp.status != 200:
                     logger.warning(f"❌ Profile page returned HTTP {resp.status}")
                     return None
@@ -706,10 +882,10 @@ class AsyncSteamMobile(AsyncSteamSession):
                 # Логируем кусок с data-config для отладки
                 config_match = re.search(r'data-config="([^"]{200,})"', html_text)
                 if config_match:
-                    logger.info(f"📋 data-config preview: {config_match.group(1)[:300]}")
+                    logger.info("📋 Profile data-config found")
                 else:
                     # 🔥 Логируем первые 500 символов HTML чтобы понять что пришло
-                    logger.warning(f"🌍 No data-config found. HTML preview: {html_text[:500]}")
+                    logger.warning("🌍 No data-config found in profile response")
 
         except Exception as e:
             logger.error(f"Failed to get account country: {e}", exc_info=True)
@@ -756,7 +932,7 @@ class AsyncSteamMobile(AsyncSteamSession):
             return None
 
         try:
-            async with self.session.get('https://steamcommunity.com/my/tradeoffers/privacy', ssl=False) as resp:
+            async with self.session.get('https://steamcommunity.com/my/tradeoffers/privacy') as resp:
                 if resp.status == 403 or resp.status == 401:
                     return None
 
@@ -789,7 +965,7 @@ class AsyncSteamMobile(AsyncSteamSession):
         }
 
         try:
-            async with self.session.get(url, headers=headers, ssl=False) as resp:
+            async with self.session.get(url, headers=headers) as resp:
                 logger.info(f"Inventory status: {resp.status} for {self.account_name} (app {app_id})")
                 if resp.status != 200:
                     # 🔥 Логируем тело ошибки
@@ -803,9 +979,9 @@ class AsyncSteamMobile(AsyncSteamSession):
                 # 🔥 Проверяем Content-Type
                 content_type = resp.headers.get('Content-Type', '')
                 if 'json' not in content_type:
-                    text = await resp.text()
+                    await resp.read()
                     logger.error(f"❌ Inventory returned non-JSON for {self.account_name}: Content-Type={content_type}")
-                    logger.error(f"Response preview: {text[:500]}")
+                    logger.error("Inventory response body omitted from logs")
                     return None
 
                 data = await resp.json()
@@ -884,12 +1060,12 @@ class AsyncSteamMobile(AsyncSteamSession):
         logger.info(f"🍪 [{self.account_name}] Cookies before sell:")
         for cookie in self.cookie_jar:
             if 'steamcommunity.com' in cookie.get('domain', ''):
-                logger.info(f"   {cookie.key}: {cookie.value[:30]}... (expires: {cookie.get('expires', 'session')})")
+                logger.info(f"   cookie present: {cookie.key}")
 
         # Гарантируем наличие sessionid
         try:
-            sessionid_before = await self._ensure_sessionid()
-            logger.info(f"🔑 [{self.account_name}] sessionid before sell: {sessionid_before[:20]}...")
+            await self._ensure_sessionid()
+            logger.info(f"🔑 [{self.account_name}] sessionid is available before sell")
         except Exception as e:
             logger.error(f"❌ [{self.account_name}] Failed to get sessionid for sell: {e}")
             return {
@@ -939,8 +1115,7 @@ class AsyncSteamMobile(AsyncSteamSession):
             async with self.session.post(
                 'https://steamcommunity.com/market/sellitem/',
                 data=payload,
-                headers=headers,
-                ssl=False
+                headers=headers
             ) as resp:
                 response_text = await resp.text()
 
@@ -951,10 +1126,6 @@ class AsyncSteamMobile(AsyncSteamSession):
                 logger.info(f"   Content-Type: {resp.headers.get('Content-Type', 'unknown')}")
                 logger.info(f"   X-EREASON: {resp.headers.get('X-EREASON', 'none')}")
                 logger.info(f"   Response length: {len(response_text)} chars")
-                logger.info(f"   Response (first 500): {response_text[:500]}")
-
-                if len(response_text) < 2000:
-                    logger.info(f"   📄 Full response: {response_text}")
                 logger.info(f"{'='*60}")
 
                 # Проверка на needauth
@@ -996,10 +1167,10 @@ class AsyncSteamMobile(AsyncSteamSession):
 
                 except json.JSONDecodeError as e:
                     logger.error(f"❌ [{self.account_name}] Sell returned non-JSON: {e}")
-                    logger.error(f"   Raw: {response_text[:1000]}")
+                    logger.error("   Sell response body omitted from logs")
                     return {
                         'success': False,
-                        'error': f'Неверный ответ (не JSON): {response_text[:200]}'
+                        'error': 'Steam вернул некорректный ответ'
                     }
 
         except Exception as e:
@@ -1060,7 +1231,7 @@ class AsyncSteamMobile(AsyncSteamSession):
         }
 
         try:
-            async with self.session.get(url, headers=headers, params=params, ssl=False) as resp:
+            async with self.session.get(url, headers=headers, params=params) as resp:
                 if resp.status == 403 or resp.status == 401:
                     return {'error': 'Требуется вход в аккаунт', 'needauth': True}
 
@@ -1115,14 +1286,13 @@ class AsyncSteamMobile(AsyncSteamSession):
         logger.info(f"🍪 [{self.account_name}] Cookies before confirmation request:")
         for cookie in self.cookie_jar:
             if 'steamcommunity.com' in cookie.get('domain', ''):
-                logger.info(f"   {cookie.key}: {cookie.value[:30]}... (expires: {cookie.get('expires', 'session')})")
+                logger.info(f"   cookie present: {cookie.key}")
 
         async def do_request():
             async with self.session.get(
                 'https://steamcommunity.com/mobileconf/getlist',
                 params=params,
-                headers=headers,
-                ssl=False
+                headers=headers
             ) as resp:
                 text = await resp.text()
 
@@ -1136,14 +1306,6 @@ class AsyncSteamMobile(AsyncSteamSession):
                 # Проверяем хедеры на needauth
                 logger.info(f"   X-EREASON header: {resp.headers.get('X-EREASON', 'none')}")
 
-                # Логируем первые 500 символов ОБЯЗАТЕЛЬНО
-                logger.info(f"   📄 Response preview: {text[:500]}")
-
-                # Если ответ короткий — логируем полностью
-                if len(text) < 2000:
-                    logger.info(f"   📄 Full response: {text}")
-                else:
-                    logger.info(f"   📄 Response (first 2000 chars): {text[:2000]}")
                 logger.info(f"{'='*60}")
 
                 try:
@@ -1156,19 +1318,15 @@ class AsyncSteamMobile(AsyncSteamSession):
 
                     if data.get('success') and data.get('conf'):
                         logger.info(f"   ✅ Got {len(data['conf'])} confirmations")
-                        for i, conf in enumerate(data['conf']):
-                            logger.info(f"      [{i}] id={conf.get('id')}, type={conf.get('type')}, headline={conf.get('headline', '')[:50]}")
                     elif data.get('needauth'):
                         logger.warning(f"   🔒 NEEDAUTH! Session expired or invalid")
                         logger.warning(f"   Message: {data.get('message', 'no message')}")
                     elif not data.get('success'):
                         logger.warning(f"   ❌ success=False, message={data.get('message', 'no message')}")
-                        logger.warning(f"   Full response data: {json.dumps(data, ensure_ascii=False)[:1000]}")
 
                     return data
                 except json.JSONDecodeError as e:
                     logger.error(f"   ❌ JSON parse error: {e}")
-                    logger.error(f"   Raw (first 2000): {text[:2000]}")
                     return {'success': False, 'message': f'JSON error: {str(e)[:100]}'}
 
         try:
@@ -1213,6 +1371,8 @@ class AsyncSteamMobile(AsyncSteamSession):
         получает новый sessionid и проверяет что сессия работает.
         Возвращает True если удалось, False если нужен полный логин.
         """
+        await self._ensure_session()
+
         logger.info(f"🔄 [{self.account_name}] Starting FULL session recovery...")
 
         if not self.refresh_token:
@@ -1242,7 +1402,7 @@ class AsyncSteamMobile(AsyncSteamSession):
                 self.cookie_jar._cookies.pop(cookie.key, None)
 
             new_sessionid = await self._ensure_sessionid()
-            logger.info(f"✅ [{self.account_name}] New sessionid obtained: {new_sessionid[:20]}...")
+            logger.info(f"✅ [{self.account_name}] New sessionid obtained")
         except Exception as e:
             logger.error(f"❌ [{self.account_name}] Failed to get new sessionid: {e}")
             return False
@@ -1253,7 +1413,7 @@ class AsyncSteamMobile(AsyncSteamSession):
                 'User-Agent': USER_AGENT_MOBILE,
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
             }
-            async with self.session.get('https://steamcommunity.com/my/', headers=headers, ssl=False, allow_redirects=False) as resp:
+            async with self.session.get('https://steamcommunity.com/my/', headers=headers, allow_redirects=False) as resp:
                 logger.info(f"   Status: {resp.status}")
 
                 if resp.status in [301, 302, 303, 307, 308]:
@@ -1318,8 +1478,7 @@ class AsyncSteamMobile(AsyncSteamSession):
             async with self.session.get(
                 'https://steamcommunity.com/mobileconf/ajaxop',
                 params=params,
-                headers=headers,
-                ssl=False
+                headers=headers
             ) as resp:
                 text = await resp.text()
 
@@ -1355,7 +1514,7 @@ class AsyncSteamMobile(AsyncSteamSession):
         await self._ensure_session()
 
         try:
-            async with self.session.get('https://steamcommunity.com/my/', ssl=False) as resp:
+            async with self.session.get('https://steamcommunity.com/my/') as resp:
                 text = await resp.text()
 
                 # Если редиректит на логин - сессия невалидна
@@ -1413,13 +1572,13 @@ class AsyncSteamMobile(AsyncSteamSession):
         }
 
         try:
-            async with self.session.get(url, headers=headers, ssl=False) as resp:
+            async with self.session.get(url, headers=headers) as resp:
                 if resp.status != 200:
                     # 🔥 Логируем детали нестандартного ответа
                     try:
-                        error_text = await resp.text()
+                        await resp.read()
                         logger.error(f"❌ Trade offers page HTTP {resp.status} for {self.account_name}")
-                        logger.error(f"Response preview: {error_text[:500]}")
+                        logger.error("Trade offers response body omitted from logs")
                     except:
                         logger.error(f"❌ Trade offers page HTTP {resp.status} for {self.account_name} (no body)")
                     raise Exception(f"HTTP {resp.status}: Не удалось загрузить страницу трейдов")
@@ -1428,8 +1587,6 @@ class AsyncSteamMobile(AsyncSteamSession):
 
                 if 'login' in text.lower() and 'password' in text.lower():
                     logger.warning(f"🔒 Trade offers page redirected to login for {self.account_name}")
-                    # 🔥 Логируем кусок HTML для диагностики
-                    logger.info(f"HTML preview: {text[:300]}")
                     raise Exception("NEEDAUTH: Требуется вход в аккаунт")
 
                 # 🔥 Логируем успешный ответ кратко
@@ -1577,7 +1734,7 @@ class AsyncSteamMobile(AsyncSteamSession):
         logger.info(f"📊 Parsed {len(offers)} trade offers for {self.account_name}")
         if not offers and html_text:
             logger.warning(f"⚠️ No trade offers parsed from HTML for {self.account_name}")
-            logger.info(f"HTML preview: {html_text[:500]}")
+            logger.info("Parsing trade offers HTML (%s bytes)", len(html_text))
 
         return offers  # 🔥 Вот эта строка уже есть в коде
 
@@ -1640,8 +1797,7 @@ class AsyncSteamMobile(AsyncSteamSession):
             async with self.session.post(
                 f'https://steamcommunity.com/tradeoffer/{tradeofferid}/accept',
                 data=payload,
-                headers=headers,
-                ssl=False
+                headers=headers
             ) as resp:
                 response_text = await resp.text()
 
@@ -1773,21 +1929,20 @@ class AsyncSteamMobile(AsyncSteamSession):
 
         try:
             logger.info(f"Declining trade offer {tradeofferid}")
-            logger.info(f"Using sessionid: {sessionid[:10]}...")
+            logger.info(f"Using sessionid for [{self.account_name}]")
 
             url = f'https://steamcommunity.com/tradeoffer/{tradeofferid}/decline'
 
             async with self.session.post(
                 url,
                 data=payload,
-                headers=headers,
-                ssl=False
+                headers=headers
             ) as resp:
 
                 logger.info(f"Decline trade response status: {resp.status}")
 
                 response_text = await resp.text()
-                logger.info(f"Decline trade response: {response_text[:200]}")
+                logger.info("Decline trade response received (%s bytes)", len(response_text))
 
                 # 🔥 ПРОВЕРЯЕМ НА NEEDAUTH
                 if resp.status in [401, 403, 429]:
@@ -1819,8 +1974,7 @@ class AsyncSteamMobile(AsyncSteamSession):
                         async with self.session.post(
                             url,
                             data=payload,
-                            headers=headers,
-                            ssl=False
+                            headers=headers
                         ) as resp2:
                             response_text2 = await resp2.text()
 
@@ -1914,8 +2068,7 @@ class AsyncSteamMobile(AsyncSteamSession):
         async with self.session.post(
             f'https://steamcommunity.com/tradeoffer/{tradeofferid}/cancel',
             data=payload,
-            headers=headers,
-            ssl=False
+            headers=headers
         ) as resp:
             return await resp.json()
 
@@ -1933,7 +2086,7 @@ class AsyncSteamMobile(AsyncSteamSession):
             'Accept-Language': 'en-US,en;q=0.5',
         }
 
-        async with self.session.get(url, headers=headers, ssl=False) as resp:
+        async with self.session.get(url, headers=headers) as resp:
             html_content = await resp.text()
 
         tree = html.fromstring(html_content)
@@ -2126,19 +2279,18 @@ class AsyncSteamMobile(AsyncSteamSession):
         avatar_url = trade_info.get('partner_avatar')
         if avatar_url:
             try:
-                async with self.session.get(avatar_url, ssl=False, headers={'User-Agent': USER_AGENT_MOBILE}) as resp:
-                    if resp.status == 200:
-                        avatar_data = await resp.read()
-                        avatar_img = Image.open(io.BytesIO(avatar_data))
-                        avatar_img = avatar_img.resize((avatar_size, avatar_size))
+                avatar_data = await self._download_steam_asset(avatar_url)
+                if avatar_data:
+                    avatar_img = Image.open(io.BytesIO(avatar_data))
+                    avatar_img = avatar_img.resize((avatar_size, avatar_size))
 
-                        # Круглая маска
-                        mask = Image.new('L', (avatar_size, avatar_size), 0)
-                        mask_draw = ImageDraw.Draw(mask)
-                        mask_draw.ellipse((0, 0, avatar_size, avatar_size), fill=255)
+                    # Круглая маска
+                    mask = Image.new('L', (avatar_size, avatar_size), 0)
+                    mask_draw = ImageDraw.Draw(mask)
+                    mask_draw.ellipse((0, 0, avatar_size, avatar_size), fill=255)
 
-                        img.paste(avatar_img, (avatar_x, avatar_y), mask)
-                        logger.info("Avatar pasted successfully")
+                    img.paste(avatar_img, (avatar_x, avatar_y), mask)
+                    logger.info("Avatar pasted successfully")
             except Exception as e:
                 logger.warning(f"Failed to load avatar: {e}")
 
@@ -2207,13 +2359,12 @@ class AsyncSteamMobile(AsyncSteamSession):
         badge_url = trade_info.get('badge_url')
         if badge_url:
             try:
-                async with self.session.get(badge_url, ssl=False, headers={'User-Agent': USER_AGENT_MOBILE}) as resp:
-                    if resp.status == 200:
-                        badge_data = await resp.read()
-                        badge_img = Image.open(io.BytesIO(badge_data))
-                        badge_img = badge_img.resize((badge_size, badge_size))
-                        img.paste(badge_img, (badge_x, badge_y))
-                        logger.info("Badge pasted successfully")
+                badge_data = await self._download_steam_asset(badge_url)
+                if badge_data:
+                    badge_img = Image.open(io.BytesIO(badge_data))
+                    badge_img = badge_img.resize((badge_size, badge_size))
+                    img.paste(badge_img, (badge_x, badge_y))
+                    logger.info("Badge pasted successfully")
             except Exception as e:
                 logger.warning(f"Failed to load badge: {e}")
 
@@ -2234,6 +2385,23 @@ class AsyncSteamMobile(AsyncSteamSession):
 
         logger.info(f"Trade image generated successfully for {partner_name}")
         return output.getvalue()
+
+    async def _download_steam_asset(self, asset_url: str) -> bytes:
+        """Download a bounded image through the mandatory Steam proxy transport."""
+        safe_url = validate_steam_asset_url(asset_url)
+        resp = await self._request(
+            'GET',
+            safe_url,
+            headers={'User-Agent': USER_AGENT_MOBILE},
+            allow_redirects=False,
+            max_response_bytes=2 * 1024 * 1024,
+        )
+        if resp.status != 200:
+            return b''
+        content_type = (resp.headers.get('Content-Type') or '').lower()
+        if not content_type.startswith('image/'):
+            raise ValueError("Steam CDN вернул не изображение")
+        return await resp.read()
 
     async def confirm_market_listing(self, conf_id: str, allow: bool = True) -> bool:
         """Специальный метод для подтверждения/отмены продаж на маркете (type=3)"""
@@ -2291,11 +2459,10 @@ class AsyncSteamMobile(AsyncSteamSession):
             async with self.session.post(
                 'https://steamcommunity.com/mobileconf/ajaxop',
                 data=data,
-                headers=headers,
-                ssl=False
+                headers=headers
             ) as resp:
                 response_text = await resp.text()
-                logger.info(f"📥 Response: {response_text[:200]}")
+                logger.info("📥 Market confirmation response received (%s bytes)", len(response_text))
 
                 try:
                     result = json.loads(response_text)

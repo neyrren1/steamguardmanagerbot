@@ -12,6 +12,8 @@ import tgbot
         ("", None),
         ("http://user:pass@example.test:8080", "http://user:pass@example.test:8080"),
         ("example.test:1080", "socks5://example.test:1080"),
+        ("example.test:1081", "socks5://example.test:1081"),
+        ("example.test:46281", "socks5://example.test:46281"),
         ("example.test:8080", "http://example.test:8080"),
         ("example.test:9000", "http://example.test:9000"),
     ],

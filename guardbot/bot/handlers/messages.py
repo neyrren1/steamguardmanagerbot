@@ -9,9 +9,17 @@ from guardbot.bot.handlers.imports import process_single_mafile
 from guardbot.bot.runtime import bot, calculate_steam_price, dp, start_trade_check_task, user_states
 from guardbot.config import logger
 from guardbot.database import AccountGroup, AsyncSessionLocal, Mafile, User
+from guardbot.passwords import (
+    MIN_BOT_PASSWORD_LENGTH,
+    PasswordRateLimitError,
+    hash_bot_password_async,
+    password_hash_needs_upgrade,
+    verify_bot_password_async,
+)
 from guardbot.security import decrypt_value, encrypt_value
+from guardbot.services.ownership import get_owned_group, get_owned_mafile
 from guardbot.services.session_manager import SteamSessionManager
-from guardbot.steam.client import AsyncSteamMobile, generate_device_id
+from guardbot.steam.client import AsyncSteamMobile, generate_device_id, parse_proxy_string, redact_proxy_url
 from sqlalchemy import func, select, text
 import io
 import json
@@ -117,7 +125,7 @@ async def handle_messages(message: Message):
             is_update = state_data.get("is_update", False)
 
             async with AsyncSessionLocal() as session:
-                mafile = await session.get(Mafile, mafile_id)
+                mafile = await get_owned_mafile(session, mafile_id, message.from_user.id)
                 if not mafile:
                     await message.answer("❌ Аккаунт не найден")
                     user_states.pop(user_id, None)
@@ -174,7 +182,7 @@ async def handle_messages(message: Message):
             context_id = state_data.get("context_id", 2)
 
             async with AsyncSessionLocal() as session:
-                mafile = await session.get(Mafile, mafile_id)
+                mafile = await get_owned_mafile(session, mafile_id, message.from_user.id)
                 if not mafile:
                     await message.answer("❌ Аккаунт не найден")
                     user_states.pop(user_id, None)
@@ -277,9 +285,7 @@ async def handle_messages(message: Message):
             pass
 
         async with AsyncSessionLocal() as session:
-            stmt = select(Mafile).where(Mafile.id == mafile_id)
-            result = await session.execute(stmt)
-            mafile = result.scalar_one_or_none()
+            mafile = await get_owned_mafile(session, mafile_id, message.from_user.id)
 
             if not mafile:
                 await message.answer("❌ Аккаунт не найден")
@@ -437,7 +443,7 @@ async def handle_messages(message: Message):
                     user_states.pop(user_id, None)
                     return
 
-                mafile.shared_secret = shared_secret
+                mafile.shared_secret = encrypt_value(shared_secret)
                 mafile.fully_enrolled = True
                 await session.commit()
 
@@ -489,7 +495,7 @@ async def handle_messages(message: Message):
             pass
 
         async with AsyncSessionLocal() as session:
-            mafile = await session.get(Mafile, mafile_id)
+            mafile = await get_owned_mafile(session, mafile_id, message.from_user.id)
             if not mafile:
                 await message.answer("❌ Аккаунт не найден")
                 user_states.pop(user_id, None)
@@ -544,7 +550,7 @@ async def handle_messages(message: Message):
         account_name = state_data.get("account_name")
 
         async with AsyncSessionLocal() as session:
-            mafile = await session.get(Mafile, mafile_id)
+            mafile = await get_owned_mafile(session, mafile_id, message.from_user.id)
             if not mafile:
                 await message.answer("❌ Аккаунт не найден")
                 user_states.pop(user_id, None)
@@ -579,11 +585,12 @@ async def handle_messages(message: Message):
                 user_states.pop(user_id, None)
                 return
 
-            # Проверяем формат прокси
-            if not proxy_input.startswith(('http://', 'https://', 'socks5://', 'socks4://')):
+            try:
+                proxy_url = parse_proxy_string(proxy_input)
+            except ValueError:
                 await message.answer(
-                    f"❌ <b>Ошибка: прокси должен содержать протокол!</b>\n\n"
-                    f"Попробуйте снова или нажмите кнопку ниже:",
+                    "❌ <b>Некорректный или небезопасный адрес прокси.</b>\n\n"
+                    "Попробуйте снова или нажмите кнопку ниже:",
                     parse_mode="HTML",
                     reply_markup=InlineKeyboardMarkup(
                         inline_keyboard=[
@@ -602,7 +609,7 @@ async def handle_messages(message: Message):
 
             # Сохраняем прокси
             old_proxy = mafile.proxy
-            mafile.proxy = proxy_input
+            mafile.proxy = encrypt_value(proxy_url)
             await session.commit()
 
             action = "изменен" if old_proxy else "добавлен"
@@ -617,7 +624,7 @@ async def handle_messages(message: Message):
             await message.answer(
                 f"✅ <b>Уникальный прокси {action}!</b>\n\n"
                 f"📱 Аккаунт: <code>{account_name}</code>\n"
-                f"🌐 Прокси: <code>{proxy_input}</code>\n\n"
+                f"🌐 Прокси: <code>{redact_proxy_url(proxy_url)}</code>\n\n"
                 f"<i>Нажмите кнопку ниже, чтобы включить уникальный прокси</i>",
                 parse_mode="HTML",
                 reply_markup=InlineKeyboardMarkup(
@@ -661,7 +668,7 @@ async def handle_messages(message: Message):
                     user_states.pop(user_id, None)
                     return
 
-                mafile.device_id = device_id
+                mafile.device_id = encrypt_value(device_id)
                 await session.commit()
 
                 await message.answer(
@@ -700,7 +707,7 @@ async def handle_messages(message: Message):
                     user_states.pop(user_id, None)
                     return
 
-                mafile.identity_secret = identity_secret
+                mafile.identity_secret = encrypt_value(identity_secret)
                 await session.commit()
 
                 await message.answer(
@@ -777,9 +784,7 @@ async def handle_messages(message: Message):
                 return
 
             async with AsyncSessionLocal() as session:
-                stmt = select(Mafile).where(Mafile.id == mafile_id)
-                result = await session.execute(stmt)
-                mafile = result.scalar_one_or_none()
+                mafile = await get_owned_mafile(session, mafile_id, message.from_user.id)
 
                 if not mafile:
                     await status_msg.edit_text("❌ Аккаунт не найден в базе")
@@ -787,14 +792,14 @@ async def handle_messages(message: Message):
                     return
 
                 # Обновляем данные
-                mafile.shared_secret = mafile_data.get('shared_secret')
-                mafile.identity_secret = mafile_data.get('identity_secret')
-                mafile.secret_1 = mafile_data.get('secret_1')
-                mafile.device_id = mafile_data.get('device_id')
-                mafile.serial_number = mafile_data.get('serial_number')
-                mafile.revocation_code = mafile_data.get('revocation_code')
-                mafile.token_gid = mafile_data.get('token_gid')
-                mafile.uri = mafile_data.get('uri')
+                mafile.shared_secret = encrypt_value(mafile_data.get('shared_secret'))
+                mafile.identity_secret = encrypt_value(mafile_data.get('identity_secret'))
+                mafile.secret_1 = encrypt_value(mafile_data.get('secret_1'))
+                mafile.device_id = encrypt_value(mafile_data.get('device_id'))
+                mafile.serial_number = encrypt_value(mafile_data.get('serial_number'))
+                mafile.revocation_code = encrypt_value(mafile_data.get('revocation_code'))
+                mafile.token_gid = encrypt_value(mafile_data.get('token_gid'))
+                mafile.uri = encrypt_value(mafile_data.get('uri'))
                 mafile.fully_enrolled = True
                 mafile.updated_at = datetime.utcnow()
 
@@ -803,12 +808,11 @@ async def handle_messages(message: Message):
                 # Проверяем генерацию кода
                 client = AsyncSteamMobile(mafile.account_name, mafile.password)
                 client.load_mobile({
-                    'shared_secret': mafile.shared_secret,
-                    'device_id': mafile.device_id or generate_device_id()
+                    'shared_secret': decrypt_value(mafile.shared_secret),
+                    'device_id': decrypt_value(mafile.device_id) or generate_device_id()
                 })
 
                 try:
-                    await client._ensure_session()
                     await client.align_time()
                     code = client.generate_steam_guard_code()
 
@@ -926,8 +930,15 @@ async def handle_messages(message: Message):
                     user_states.pop(user_id, None)
                     return
 
-                decrypted = decrypt_value(user.bot_password)
-                if password != decrypted:
+                try:
+                    password_valid = await verify_bot_password_async(
+                        user.bot_password, password, user_id=telegram_id
+                    )
+                except PasswordRateLimitError:
+                    await message.answer("❌ Слишком много попыток. Повторите через минуту.")
+                    user_states.pop(user_id, None)
+                    return
+                if not password_valid:
                     await message.answer("❌ <b>Неверный пароль!</b>", parse_mode="HTML")
                     user_states.pop(user_id, None)
                     return
@@ -937,8 +948,10 @@ async def handle_messages(message: Message):
                 await message.answer("✅ <b>Пароль удалён!</b>", parse_mode="HTML")
             else:
                 # Установка или изменение пароля
-                if len(password) < 4:
-                    await message.answer("❌ Пароль должен быть не менее 4 символов")
+                if len(password) < MIN_BOT_PASSWORD_LENGTH:
+                    await message.answer(
+                        f"❌ Пароль должен быть не менее {MIN_BOT_PASSWORD_LENGTH} символов"
+                    )
                     return
 
                 if not user:
@@ -946,11 +959,11 @@ async def handle_messages(message: Message):
                         telegram_id=telegram_id,
                         username=message.from_user.username,
                         full_name=message.from_user.full_name,
-                        bot_password=encrypt_value(password)
+                        bot_password=await hash_bot_password_async(password)
                     )
                     session.add(user)
                 else:
-                    user.bot_password = encrypt_value(password)
+                    user.bot_password = await hash_bot_password_async(password)
 
                 await session.commit()
 
@@ -985,11 +998,19 @@ async def handle_messages(message: Message):
                 user_states.pop(user_id, None)
                 return
 
-            decrypted = decrypt_value(user.bot_password)
-
-            if password != decrypted:
+            try:
+                password_valid = await verify_bot_password_async(
+                    user.bot_password, password, user_id=telegram_id
+                )
+            except PasswordRateLimitError:
+                await message.answer("❌ Слишком много попыток. Повторите через минуту.")
+                return
+            if not password_valid:
                 await message.answer("❌ <b>Неверный пароль!</b>", parse_mode="HTML")
                 return
+
+            if password_hash_needs_upgrade(user.bot_password):
+                user.bot_password = await hash_bot_password_async(password)
 
             user.last_activity = datetime.utcnow()
             await session.commit()
@@ -1042,7 +1063,7 @@ async def handle_messages(message: Message):
             pass
 
         async with AsyncSessionLocal() as session:
-            grp = await session.get(AccountGroup, group_id)
+            grp = await get_owned_group(session, group_id, message.from_user.id)
             if not grp:
                 await message.answer("❌ Группа не найдена")
                 user_states.pop(user_id, None)

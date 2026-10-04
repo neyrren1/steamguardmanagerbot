@@ -1,13 +1,16 @@
 """Extracted from the legacy bot module without behavior changes."""
 
+from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import Command, CommandObject
 from aiogram.types import BufferedInputFile, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from datetime import datetime
+from guardbot.archive_security import ArchiveSecurityError, validate_zip_entry_count
 from guardbot.bot.handlers.commands import build_mafile_dict
 from guardbot.bot.runtime import bot, dp, user_states
 from guardbot.config import MAX_FILE_SIZE, MAX_ZIP_UNCOMPRESSED, logger
 from guardbot.database import AccountGroup, AsyncSessionLocal, Mafile
 from guardbot.security import decrypt_value, encrypt_value
+from guardbot.services.ownership import get_owned_mafile
 from guardbot.services.session_manager import SteamSessionManager
 from guardbot.steam.client import AsyncSteamMobile, InvalidSteamGuardCode, generate_device_id
 from sqlalchemy import func, select, text
@@ -340,6 +343,8 @@ async def process_zip_archive(message: Message, user_id: int):
         await bot.download_file(file_path, zip_bytes)
         zip_bytes.seek(0)
 
+        validate_zip_entry_count(zip_bytes.getbuffer(), max_entries=500)
+
         # Открываем ZIP
         with zipfile.ZipFile(zip_bytes, 'r') as zip_file:
             # 🔥 Защита: проверка общего размера внутри архива
@@ -353,9 +358,13 @@ async def process_zip_archive(message: Message, user_id: int):
                 )
                 return
 
-            # Получаем список .mafile файлов
-            mafile_files = [f for f in zip_file.namelist() if f.lower().endswith('.mafile')]
-            json_files = [f for f in zip_file.namelist() if f.lower().endswith('.json') and f not in mafile_files]
+            # Работаем с ZipInfo, чтобы проверять размер до распаковки в память.
+            archive_entries = [info for info in zip_file.infolist() if not info.is_dir()]
+            mafile_files = [info for info in archive_entries if info.filename.lower().endswith('.mafile')]
+            json_files = [
+                info for info in archive_entries
+                if info.filename.lower().endswith('.json') and info not in mafile_files
+            ]
             all_files = mafile_files + json_files
 
             if not all_files:
@@ -388,13 +397,22 @@ async def process_zip_archive(message: Message, user_id: int):
 
             last_update = time.time()
 
-            for idx, file_name_in_zip in enumerate(all_files, 1):
+            for idx, zip_info in enumerate(all_files, 1):
+                file_name_in_zip = zip_info.filename
                 # 🔥 Защита: эскейпим имя файла из архива
                 safe_inner_name = file_name_in_zip.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')
 
                 try:
+                    if zip_info.flag_bits & 0x1:
+                        errors.append(f"{safe_inner_name}: зашифрованные файлы не поддерживаются")
+                        continue
+
+                    if zip_info.file_size > MAX_FILE_SIZE:
+                        errors.append(f"{safe_inner_name}: файл слишком большой, пропущен")
+                        continue
+
                     # Читаем содержимое файла
-                    file_content = zip_file.read(file_name_in_zip)
+                    file_content = zip_file.read(zip_info)
 
                     # 🔥 Защита: проверка размера отдельного файла в архиве
                     if len(file_content) > MAX_FILE_SIZE:
@@ -577,6 +595,11 @@ async def process_zip_archive(message: Message, user_id: int):
         await status_msg.edit_text(
             f"❌ <b>Файл поврежден или не является ZIP-архивом</b>",
             parse_mode="HTML"
+        )
+    except ArchiveSecurityError:
+        await status_msg.edit_text(
+            "❌ <b>Архив содержит слишком много записей или имеет неподдерживаемый формат</b>",
+            parse_mode="HTML",
         )
     except Exception as e:
         logger.error(f"Error processing ZIP archive: {e}", exc_info=True)
@@ -1088,9 +1111,7 @@ async def handle_mafile_for_account(message: Message, state_data: dict, user_id:
             return
 
         async with AsyncSessionLocal() as session:
-            stmt = select(Mafile).where(Mafile.id == mafile_id)
-            result = await session.execute(stmt)
-            mafile = result.scalar_one_or_none()
+            mafile = await get_owned_mafile(session, mafile_id, message.from_user.id)
 
             if not mafile:
                 await status_msg.edit_text("❌ Аккаунт не найден в базе")
@@ -1169,7 +1190,11 @@ async def process_steam_code(message: Message, state_data: dict, user_id: int):
         return
 
     try:
-        status_msg = await message.answer(f"🔄 Подтверждаю вход с кодом <code>{code}</code>...", parse_mode="HTML")
+        try:
+            await message.delete()
+        except TelegramAPIError:
+            pass
+        status_msg = await message.answer("🔄 Подтверждаю вход...", parse_mode="HTML")
 
         await client.confirm_login(code)
         await SteamSessionManager.save_steam_session_to_db(db_session, mafile_id, client)
@@ -1271,9 +1296,7 @@ async def process_mafile_for_account(message: Message, user_id: int, state_data:
             return
 
         async with AsyncSessionLocal() as session:
-            stmt = select(Mafile).where(Mafile.id == mafile_id)
-            result = await session.execute(stmt)
-            mafile = result.scalar_one_or_none()
+            mafile = await get_owned_mafile(session, mafile_id, message.from_user.id)
 
             if not mafile:
                 await status_msg.edit_text("❌ Аккаунт не найден в базе")
@@ -1310,7 +1333,6 @@ async def process_mafile_for_account(message: Message, user_id: int, state_data:
             })
 
             try:
-                await client._ensure_session()
                 await client.align_time()
                 code = client.generate_steam_guard_code()
 
@@ -1400,9 +1422,7 @@ async def process_mafile_during_login(message: Message, user_id: int, state_data
 
         # Сохраняем в БД (шифруем)
         async with AsyncSessionLocal() as session:
-            stmt = select(Mafile).where(Mafile.id == mafile_id)
-            result = await session.execute(stmt)
-            mafile = result.scalar_one_or_none()
+            mafile = await get_owned_mafile(session, mafile_id, message.from_user.id)
 
             if mafile:
                 mafile.shared_secret = encrypt_value(mafile_data.get('shared_secret'))

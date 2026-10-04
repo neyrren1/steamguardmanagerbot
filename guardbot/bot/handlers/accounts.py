@@ -8,12 +8,12 @@ from guardbot.bot.runtime import check_proxy_available, dp, require_proxy, user_
 from guardbot.config import STEAM_CURRENCIES, logger
 from guardbot.database import AccountGroup, AsyncSessionLocal, Mafile, User
 from guardbot.security import decrypt_value
+from guardbot.services.ownership import get_owned_group, get_owned_mafile
 from guardbot.services.session_manager import SteamSessionManager
-from guardbot.steam.client import AsyncSteamMobile, InvalidCredentials, InvalidSteamGuardCode, LoginConfirmType, generate_device_id
+from guardbot.steam.client import AsyncSteamMobile, InvalidCredentials, InvalidSteamGuardCode, LoginConfirmType, generate_device_id, probe_proxy_external_ip, redact_proxy_url
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional
-import aiohttp
 import time
 
 @dp.callback_query(F.data == "info")
@@ -231,7 +231,7 @@ async def show_accounts_page(callback: CallbackQuery, page: int, group_id: Optio
         if group_id == 0:
             group_name = "Без группы"
         elif group_id is not None:
-            grp = await session.get(AccountGroup, group_id)
+            grp = await get_owned_group(session, group_id, telegram_id)
             if grp:
                 group_name = f"Группа: {grp.name}"
 
@@ -347,9 +347,7 @@ async def callback_account_detail(callback: CallbackQuery):
     mafile_id = int(callback.data.split("_")[2])
 
     async with AsyncSessionLocal() as session:
-        stmt = select(Mafile).where(Mafile.id == mafile_id)
-        result = await session.execute(stmt)
-        mafile = result.scalar_one_or_none()
+        mafile = await get_owned_mafile(session, mafile_id, callback.from_user.id)
 
         if not mafile:
             await callback.answer("Аккаунт не найден", show_alert=True)
@@ -371,14 +369,14 @@ async def callback_account_detail(callback: CallbackQuery):
         # Прокси информация
         if mafile.unique_proxy and mafile.proxy:
             decrypted = decrypt_value(mafile.proxy)
-            proxy_info = f"уникальный: <code>{decrypted[:30] if decrypted else 'N/A'}...</code>"
+            proxy_info = f"уникальный: <code>{redact_proxy_url(decrypted) if decrypted else 'N/A'}</code>"
         else:
             stmt = select(User).where(User.telegram_id == mafile.telegram_id)
             result = await session.execute(stmt)
             user = result.scalar_one_or_none()
             if user and user.general_proxy:
                 decrypted = decrypt_value(user.general_proxy)
-                proxy_info = f"общий: <code>{decrypted[:30] if decrypted else 'N/A'}...</code>"
+                proxy_info = f"общий: <code>{redact_proxy_url(decrypted) if decrypted else 'N/A'}</code>"
             else:
                 proxy_info = "⚠️ Не настроен (только коды)"
 
@@ -487,7 +485,7 @@ async def callback_account_settings(callback: CallbackQuery):
     mafile_id = int(callback.data.split("_")[2])
 
     async with AsyncSessionLocal() as session:
-        mafile = await session.get(Mafile, mafile_id)
+        mafile = await get_owned_mafile(session, mafile_id, callback.from_user.id)
         if not mafile:
             await callback.answer("Аккаунт не найден", show_alert=True)
             return
@@ -504,7 +502,7 @@ async def callback_toggle_unique_proxy(callback: CallbackQuery):
     action = parts[4]  # "on" или "off"
 
     async with AsyncSessionLocal() as session:
-        mafile = await session.get(Mafile, mafile_id)
+        mafile = await get_owned_mafile(session, mafile_id, callback.from_user.id)
         if not mafile:
             await callback.answer("Аккаунт не найден", show_alert=True)
             return
@@ -536,14 +534,14 @@ async def update_account_settings_message(message: Message, mafile: Mafile, db_s
 
     # Информация о прокси
     if mafile.unique_proxy and mafile.proxy:
-        proxy_status = f"🔒 Уникальный прокси:\n<code>{decrypt_value(mafile.proxy)}</code>"
+        proxy_status = f"🔒 Уникальный прокси:\n<code>{redact_proxy_url(decrypt_value(mafile.proxy))}</code>"
         unique_enabled = True
     else:
         stmt = select(User).where(User.telegram_id == mafile.telegram_id)
         result = await db_session.execute(stmt)
         user = result.scalar_one_or_none()
         if user and user.general_proxy:
-            proxy_status = f"🌐 Общий прокси:\n<code>{decrypt_value(user.general_proxy)}</code>"
+            proxy_status = f"🌐 Общий прокси:\n<code>{redact_proxy_url(decrypt_value(user.general_proxy))}</code>"
         else:
             proxy_status = "❌ Прокси не настроен"
         unique_enabled = False
@@ -649,7 +647,7 @@ async def update_account_settings_message(message: Message, mafile: Mafile, db_s
     # 🔥 6. Группа
     current_group_name = "Без группы"
     if mafile.group_id:
-        grp = await db_session.get(AccountGroup, mafile.group_id)
+        grp = await get_owned_group(db_session, mafile.group_id, mafile.telegram_id)
         if grp:
             current_group_name = grp.name
     keyboard_buttons.append([
@@ -694,7 +692,7 @@ async def callback_change_note(callback: CallbackQuery):
     mafile_id = int(callback.data.split("_")[2])
 
     async with AsyncSessionLocal() as session:
-        mafile = await session.get(Mafile, mafile_id)
+        mafile = await get_owned_mafile(session, mafile_id, callback.from_user.id)
         if not mafile:
             await callback.answer("Аккаунт не найден", show_alert=True)
             return
@@ -737,12 +735,16 @@ async def callback_change_unique_proxy(callback: CallbackQuery):
     mafile_id = int(callback.data.split("_")[3])
 
     async with AsyncSessionLocal() as session:
-        mafile = await session.get(Mafile, mafile_id)
+        mafile = await get_owned_mafile(session, mafile_id, callback.from_user.id)
         if not mafile:
             await callback.answer("Аккаунт не найден", show_alert=True)
             return
 
-        current_proxy = mafile.proxy or "не установлен"
+        current_proxy = (
+            redact_proxy_url(decrypt_value(mafile.proxy))
+            if mafile.proxy
+            else "не установлен"
+        )
 
         user_states[callback.from_user.id] = {
             "state": "waiting_unique_proxy",
@@ -757,8 +759,8 @@ async def callback_change_unique_proxy(callback: CallbackQuery):
             f"<b>Отправьте новый прокси в формате:</b>\n"
             f"<code>protocol://username:password@host:port</code>\n\n"
             f"<b>Примеры:</b>\n"
-            f"• <code>http://user:pass@192.168.1.1:8080</code>\n"
-            f"• <code>socks5://user:pass@192.168.1.1:1080</code>\n\n"
+            f"• <code>http://user:pass@proxy.example.com:8080</code>\n"
+            f"• <code>socks5://user:pass@proxy.example.com:1080</code>\n\n"
             f"<b>Для удаления прокси отправьте точку:</b> <code>.</code>\n\n"
             f"Для отмены нажмите кнопку ниже:"
         )
@@ -791,7 +793,7 @@ async def callback_cancel_state_to_settings(callback: CallbackQuery):
 
     # Возвращаемся в настройки аккаунта
     async with AsyncSessionLocal() as session:
-        mafile = await session.get(Mafile, mafile_id)
+        mafile = await get_owned_mafile(session, mafile_id, callback.from_user.id)
         if not mafile:
             await callback.answer("Аккаунт не найден", show_alert=True)
             return
@@ -805,7 +807,7 @@ async def callback_set_unique_proxy(callback: CallbackQuery):
     mafile_id = int(callback.data.split("_")[3])
 
     async with AsyncSessionLocal() as session:
-        mafile = await session.get(Mafile, mafile_id)
+        mafile = await get_owned_mafile(session, mafile_id, callback.from_user.id)
         if not mafile:
             await callback.answer("Аккаунт не найден", show_alert=True)
             return
@@ -822,8 +824,8 @@ async def callback_set_unique_proxy(callback: CallbackQuery):
             f"Отправьте прокси в формате:\n"
             f"<code>protocol://username:password@host:port</code>\n\n"
             f"Примеры:\n"
-            f"• <code>http://user:pass@192.168.1.1:8080</code>\n"
-            f"• <code>socks5://user:pass@192.168.1.1:1080</code>\n\n"
+            f"• <code>http://user:pass@proxy.example.com:8080</code>\n"
+            f"• <code>socks5://user:pass@proxy.example.com:1080</code>\n\n"
             f"Для отмены нажмите кнопку ниже:",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(
@@ -843,7 +845,7 @@ async def callback_remove_account_proxy(callback: CallbackQuery):
     mafile_id = int(callback.data.split("_")[3])
 
     async with AsyncSessionLocal() as session:
-        mafile = await session.get(Mafile, mafile_id)
+        mafile = await get_owned_mafile(session, mafile_id, callback.from_user.id)
         if not mafile:
             await callback.answer("Аккаунт не найден", show_alert=True)
             return
@@ -861,7 +863,7 @@ async def callback_test_account_proxy(callback: CallbackQuery):
     mafile_id = int(callback.data.split("_")[3])
 
     async with AsyncSessionLocal() as session:
-        mafile = await session.get(Mafile, mafile_id)
+        mafile = await get_owned_mafile(session, mafile_id, callback.from_user.id)
         if not mafile:
             await callback.answer("Аккаунт не найден", show_alert=True)
             return
@@ -883,6 +885,10 @@ async def callback_test_account_proxy(callback: CallbackQuery):
                 await callback.answer("❌ Прокси не настроен!", show_alert=True)
                 return
 
+        if not proxy:
+            await callback.answer("❌ Прокси повреждён или пуст!", show_alert=True)
+            return
+
         await callback.answer("🔄 Тестирую прокси...")
 
         status_msg = await callback.message.answer(
@@ -891,39 +897,26 @@ async def callback_test_account_proxy(callback: CallbackQuery):
         )
 
         try:
-            test_session = aiohttp.ClientSession()
-
-            try:
-                async with test_session.get(
-                    'http://httpbin.org/ip',
-                    proxy=proxy,
-                    ssl=False,
-                    timeout=aiohttp.ClientTimeout(total=30)
-                ) as resp:
-                    ip_data = await resp.json()
-                    external_ip = ip_data.get('origin', 'Unknown')
-
-                await status_msg.edit_text(
-                    f"✅ <b>{proxy_type} прокси работает!</b>\n\n"
-                    f"📱 Аккаунт: <code>{mafile.account_name}</code>\n"
-                    f"🌐 Прокси: <code>{proxy}</code>\n"
-                    f"📍 Внешний IP: <code>{external_ip}</code>",
-                    parse_mode="HTML",
-                    reply_markup=InlineKeyboardMarkup(
-                        inline_keyboard=[[
-                            InlineKeyboardButton(
-                                text="◀️ Назад",
-                                callback_data=f"account_settings_{mafile.id}"
-                            )
-                        ]]
-                    )
+            external_ip = await probe_proxy_external_ip(proxy)
+            await status_msg.edit_text(
+                f"✅ <b>{proxy_type} прокси работает!</b>\n\n"
+                f"📱 Аккаунт: <code>{mafile.account_name}</code>\n"
+                f"🌐 Прокси: <code>{redact_proxy_url(proxy)}</code>\n"
+                f"📍 Внешний IP: <code>{external_ip}</code>",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(
+                    inline_keyboard=[[
+                        InlineKeyboardButton(
+                            text="◀️ Назад",
+                            callback_data=f"account_settings_{mafile.id}"
+                        )
+                    ]]
                 )
-            finally:
-                await test_session.close()
+            )
 
         except Exception as e:
             await status_msg.edit_text(
-                f"❌ <b>Ошибка прокси:</b>\n\n<code>{str(e)[:200]}</code>",
+                f"❌ <b>Ошибка прокси:</b>\n\n<code>{type(e).__name__}</code>",
                 parse_mode="HTML",
                 reply_markup=InlineKeyboardMarkup(
                     inline_keyboard=[[
@@ -943,9 +936,7 @@ async def callback_action_get_code(callback: CallbackQuery):
     mafile_id = int(callback.data.split("_")[3])
 
     async with AsyncSessionLocal() as session:
-        stmt = select(Mafile).where(Mafile.id == mafile_id)
-        result = await session.execute(stmt)
-        mafile = result.scalar_one_or_none()
+        mafile = await get_owned_mafile(session, mafile_id, callback.from_user.id)
 
         if not mafile:
             await callback.answer("Аккаунт не найден", show_alert=True)
@@ -977,7 +968,7 @@ async def callback_action_login(callback: CallbackQuery):
         return
 
     async with AsyncSessionLocal() as session:
-        mafile = await session.get(Mafile, mafile_id)
+        mafile = await get_owned_mafile(session, mafile_id, callback.from_user.id)
 
         if not mafile:
             await callback.answer("Аккаунт не найден", show_alert=True)
@@ -1216,9 +1207,7 @@ async def callback_enter_password(callback: CallbackQuery):
     mafile_id = int(callback.data.split("_")[2])
 
     async with AsyncSessionLocal() as session:
-        stmt = select(Mafile).where(Mafile.id == mafile_id)
-        result = await session.execute(stmt)
-        mafile = result.scalar_one_or_none()
+        mafile = await get_owned_mafile(session, mafile_id, callback.from_user.id)
 
         if not mafile:
             await callback.answer("Аккаунт не найден", show_alert=True)
@@ -1251,9 +1240,7 @@ async def callback_try_refresh(callback: CallbackQuery):
     mafile_id = int(callback.data.split("_")[2])
 
     async with AsyncSessionLocal() as session:
-        stmt = select(Mafile).where(Mafile.id == mafile_id)
-        result = await session.execute(stmt)
-        mafile = result.scalar_one_or_none()
+        mafile = await get_owned_mafile(session, mafile_id, callback.from_user.id)
 
         if not mafile:
             await callback.answer("Аккаунт не найден", show_alert=True)
@@ -1381,9 +1368,7 @@ async def callback_manual_code(callback: CallbackQuery):
     telegram_id = callback.from_user.id
 
     async with AsyncSessionLocal() as session:
-        stmt = select(Mafile).where(Mafile.id == mafile_id)
-        result = await session.execute(stmt)
-        mafile = result.scalar_one_or_none()
+        mafile = await get_owned_mafile(session, mafile_id, callback.from_user.id)
 
         if not mafile:
             await callback.answer("Аккаунт не найден", show_alert=True)
@@ -1429,9 +1414,7 @@ async def callback_import_mafile_for(callback: CallbackQuery):
     mafile_id = int(callback.data.split("_")[3])
 
     async with AsyncSessionLocal() as session:
-        stmt = select(Mafile).where(Mafile.id == mafile_id)
-        result = await session.execute(stmt)
-        mafile = result.scalar_one_or_none()
+        mafile = await get_owned_mafile(session, mafile_id, callback.from_user.id)
 
         if not mafile:
             await callback.answer("Аккаунт не найден", show_alert=True)
@@ -1466,9 +1449,7 @@ async def callback_action_check_token(callback: CallbackQuery):
     mafile_id = int(callback.data.split("_")[3])
 
     async with AsyncSessionLocal() as session:
-        stmt = select(Mafile).where(Mafile.id == mafile_id)
-        result = await session.execute(stmt)
-        mafile = result.scalar_one_or_none()
+        mafile = await get_owned_mafile(session, mafile_id, callback.from_user.id)
 
         if not mafile:
             await callback.answer("Аккаунт не найден", show_alert=True)
@@ -1544,9 +1525,7 @@ async def callback_confirm_delete(callback: CallbackQuery):
     mafile_id = int(callback.data.split("_")[2])
 
     async with AsyncSessionLocal() as session:
-        stmt = select(Mafile).where(Mafile.id == mafile_id)
-        result = await session.execute(stmt)
-        mafile = result.scalar_one_or_none()
+        mafile = await get_owned_mafile(session, mafile_id, callback.from_user.id)
 
         if mafile:
             account_name = mafile.account_name
@@ -1758,8 +1737,6 @@ async def generate_and_send_code(message: Message, mafile: Mafile):
         }
         client.load_mobile(mobile_data)
 
-        await client._ensure_session()
-
         # 🔥 Пробуем синхронизировать время
         try:
             await client.align_time()
@@ -1822,9 +1799,7 @@ async def callback_refresh_code(callback: CallbackQuery):
     mafile_id = int(callback.data.split("_")[2])
 
     async with AsyncSessionLocal() as session:
-        stmt = select(Mafile).where(Mafile.id == mafile_id)
-        result = await session.execute(stmt)
-        mafile = result.scalar_one_or_none()
+        mafile = await get_owned_mafile(session, mafile_id, callback.from_user.id)
 
         if not mafile:
             await callback.answer("Аккаунт не найден", show_alert=True)
@@ -1860,8 +1835,6 @@ async def callback_refresh_code(callback: CallbackQuery):
                 'secret_1': decrypt_value(mafile.secret_1)
             }
             client.load_mobile(mobile_data)
-
-            await client._ensure_session()
 
             # Пробуем синхронизировать время
             try:

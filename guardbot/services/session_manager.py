@@ -4,11 +4,34 @@ from datetime import datetime
 from guardbot.config import STEAM_CURRENCIES, logger
 from guardbot.database import Mafile, User
 from guardbot.security import decrypt_dict, decrypt_value, encrypt_dict, encrypt_value
-from guardbot.steam.client import AsyncSteamMobile, parse_proxy_string
+from guardbot.steam.client import AsyncSteamMobile, ProxyRequiredError, parse_proxy_string
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 # ==================== STEAM SESSION MANAGER ====================
+
+
+async def resolve_proxy_for_account(mafile: Mafile, db_session: AsyncSession) -> str:
+    """Resolve the account's effective proxy and fail closed when absent."""
+    if mafile.unique_proxy and mafile.proxy:
+        decrypted_proxy = decrypt_value(mafile.proxy)
+        parsed_proxy = parse_proxy_string(decrypted_proxy)
+        if parsed_proxy:
+            return parsed_proxy
+
+    stmt = select(User).where(User.telegram_id == mafile.telegram_id)
+    result = await db_session.execute(stmt)
+    user = result.scalar_one_or_none()
+    if user and user.general_proxy:
+        decrypted_proxy = decrypt_value(user.general_proxy)
+        parsed_proxy = parse_proxy_string(decrypted_proxy)
+        if parsed_proxy:
+            return parsed_proxy
+
+    raise ProxyRequiredError(
+        f"Для аккаунта {mafile.account_name} не настроен прокси. "
+        "Укажите общий прокси или уникальный прокси аккаунта."
+    )
 
 class SteamSessionManager:
     """Менеджер для работы со Steam сессиями через БД"""
@@ -20,41 +43,7 @@ class SteamSessionManager:
         # 🔥 Расшифровываем пароль
         password = decrypt_value(mafile.password) if mafile.password else ""
 
-        # Определяем какой прокси использовать
-        proxy = None
-
-        if mafile.unique_proxy and mafile.proxy:
-            # 🔥 Расшифровываем уникальный прокси
-            decrypted_proxy = decrypt_value(mafile.proxy)
-            proxy = parse_proxy_string(decrypted_proxy) if decrypted_proxy else None
-            logger.info(f"Using UNIQUE proxy for {mafile.account_name}")
-        else:
-            # Используем общий прокси пользователя
-            stmt = select(User).where(User.telegram_id == mafile.telegram_id)
-            result = await db_session.execute(stmt)
-            user = result.scalar_one_or_none()
-
-            if user and user.general_proxy:
-                # 🔥 Расшифровываем общий прокси
-                decrypted_proxy = decrypt_value(user.general_proxy)
-                proxy = parse_proxy_string(decrypted_proxy) if decrypted_proxy else None
-                logger.info(f"Using GENERAL proxy for {mafile.account_name}")
-            else:
-                # Проверяем, есть ли у пользователя вообще какие-то прокси
-                stmt = select(Mafile).where(
-                    Mafile.telegram_id == mafile.telegram_id,
-                    Mafile.unique_proxy == True,
-                    Mafile.proxy.isnot(None)
-                )
-                result = await db_session.execute(stmt)
-                has_unique_proxy = result.scalar_one_or_none() is not None
-
-                if has_unique_proxy:
-                    raise Exception(f"Для аккаунта {mafile.account_name} не настроен прокси.\n"
-                                f"Используйте /set_account_proxy {mafile.account_name} [url]")
-                else:
-                    raise Exception(f"Прокси не настроен. Используйте /set_proxy [url] для общего прокси\n"
-                                f"или /set_account_proxy {mafile.account_name} [url] для уникального.")
+        proxy = await resolve_proxy_for_account(mafile, db_session)
 
         # Создаем клиент с расшифрованным паролем и прокси
         client = AsyncSteamMobile(mafile.account_name, password, proxy=proxy)

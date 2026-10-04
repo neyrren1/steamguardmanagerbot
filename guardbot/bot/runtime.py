@@ -8,10 +8,11 @@ from guardbot import security
 from guardbot.config import STEAM_CURRENCIES, logger
 from guardbot.database import AsyncSessionLocal, Mafile, User
 from guardbot.security import decrypt_value
+from guardbot.services.ownership import get_owned_mafile
 from guardbot.services.session_manager import SteamSessionManager
-from guardbot.steam.client import AsyncSteamMobile, USER_AGENT_MOBILE
+from guardbot.steam.client import AsyncSteamMobile, ProxyRequiredError, USER_AGENT_MOBILE
 from sqlalchemy import func, select, text
-from typing import Dict, Optional
+from typing import Optional
 import aiohttp
 import asyncio
 import json
@@ -223,7 +224,7 @@ async def callback_sell_item(callback: CallbackQuery):
 
     # Для min и median - получаем цену и продаём
     async with AsyncSessionLocal() as session:
-        mafile = await session.get(Mafile, mafile_id)
+        mafile = await get_owned_mafile(session, mafile_id, callback.from_user.id)
         if not mafile:
             await callback.answer("Аккаунт не найден", show_alert=True)
             return
@@ -254,7 +255,7 @@ async def callback_sell_item(callback: CallbackQuery):
 
             # Получаем цену
             await client._ensure_session()
-            price_data = await get_item_price(client.session, app_id, item['market_hash_name'], country, currency)
+            price_data = await get_item_price(client, app_id, item['market_hash_name'], country, currency)
 
             if not price_data:
                 await callback.answer("Не удалось получить цену", show_alert=True)
@@ -408,12 +409,12 @@ async def callback_sell_item(callback: CallbackQuery):
         finally:
             await client.close()
 
-async def get_item_price(session: aiohttp.ClientSession, app_id: int, market_hash_name: str, country: str = "UA", currency: int = 18) -> Optional[Dict]:
+async def get_item_price(client: AsyncSteamMobile, app_id: int, market_hash_name: str, country: str = "UA", currency: int = 18) -> dict | None:
     """
     Получает цену предмета с Steam Market
 
     Args:
-        session: aiohttp сессия (ДОЛЖНА быть с ProxyConnector для SOCKS5)
+        client: Steam-клиент с обязательным proxy-only transport
         app_id: ID игры (730=CS2)
         market_hash_name: полное имя предмета для маркета
         country: код страны (UA, US, etc.)
@@ -422,12 +423,7 @@ async def get_item_price(session: aiohttp.ClientSession, app_id: int, market_has
     Returns:
         dict с ключами lowest_price, median_price, volume или None
     """
-    import urllib.parse
-
-    # Кодируем market_hash_name для URL
-    encoded_name = urllib.parse.quote(market_hash_name)
-
-    url = f"https://steamcommunity.com/market/priceoverview/"
+    url = "https://steamcommunity.com/market/priceoverview/"
     params = {
         'country': country,
         'currency': currency,
@@ -442,30 +438,25 @@ async def get_item_price(session: aiohttp.ClientSession, app_id: int, market_has
     }
 
     try:
-        # 🔥 Сессия уже должна быть с правильным коннектором (ProxyConnector для SOCKS5)
-        async with session.get(url, params=params, headers=headers, ssl=False) as resp:
-            if resp.status != 200:
-                try:
-                    error_text = await resp.text()
-                    logger.warning(f"Price overview HTTP {resp.status} for '{market_hash_name}': {error_text[:300]}")
-                except:
-                    logger.warning(f"Price overview HTTP {resp.status} for '{market_hash_name}' (no body)")
-                return None
+        resp = await client._request('GET', url, params=params, headers=headers)
+        if resp.status != 200:
+            logger.warning(f"Price overview HTTP {resp.status} for '{market_hash_name}'")
+            return None
 
-            data = await resp.json()
+        data = await resp.json()
+        if data.get('success'):
+            logger.info(f"💰 Price for '{market_hash_name}': lowest={data.get('lowest_price')}, median={data.get('median_price')}")
+            return {
+                'lowest_price': data.get('lowest_price', 'N/A'),
+                'median_price': data.get('median_price', 'N/A'),
+                'volume': data.get('volume', '0')
+            }
 
-            if data.get('success'):
-                logger.info(f"💰 Price for '{market_hash_name}': lowest={data.get('lowest_price')}, median={data.get('median_price')}")
-                return {
-                    'lowest_price': data.get('lowest_price', 'N/A'),
-                    'median_price': data.get('median_price', 'N/A'),
-                    'volume': data.get('volume', '0')
-                }
-            else:
-                logger.warning(f"❌ Price overview failed for '{market_hash_name}' (app {app_id}, country {country}, currency {currency})")
-                logger.warning(f"Full response: {json.dumps(data, ensure_ascii=False)}")
-                return None
+        logger.warning(f"❌ Price overview failed for '{market_hash_name}' (app {app_id}, country {country}, currency {currency})")
+        return None
 
+    except ProxyRequiredError:
+        raise
     except Exception as e:
         logger.error(f"Error getting price for {market_hash_name}: {e}")
         return None
@@ -915,7 +906,11 @@ async def check_proxy_available(telegram_id: int, for_steam_requests: bool = Tru
         result = await session.execute(stmt)
         user = result.scalar_one_or_none()
 
-        logger.info(f"User found: {user is not None}, general_proxy: {user.general_proxy if user else None}")
+        logger.info(
+            "User found: %s, general_proxy configured: %s",
+            user is not None,
+            bool(user and user.general_proxy),
+        )
 
         if user and user.general_proxy:
             proxy_decrypted = decrypt_value(user.general_proxy)

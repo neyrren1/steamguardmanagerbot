@@ -5,6 +5,7 @@ from aiogram.types import BufferedInputFile, CallbackQuery, InlineKeyboardButton
 from guardbot.bot.runtime import bot, calculate_steam_price, check_proxy_available, dp, get_item_price, process_inventory_items_universal, show_recovery_status, stop_trade_check_task, user_states
 from guardbot.config import STEAM_CURRENCIES, logger
 from guardbot.database import AsyncSessionLocal, Mafile, User
+from guardbot.services.ownership import get_owned_mafile
 from guardbot.services.session_manager import SteamSessionManager
 from sqlalchemy import select, text
 import asyncio
@@ -29,7 +30,10 @@ async def callback_trades_menu(callback: CallbackQuery):
 
     # Получаем настройки уведомлений
     async with AsyncSessionLocal() as session:
-        mafile = await session.get(Mafile, mafile_id)
+        mafile = await get_owned_mafile(session, mafile_id, callback.from_user.id)
+        if not mafile:
+            await callback.answer("Аккаунт не найден", show_alert=True)
+            return
         notifications_status = "🟢 ВКЛ" if mafile.trade_notifications else "🔴 ВЫКЛ"
         interval_text = f" (каждые {mafile.trade_notify_interval} мин)" if mafile.trade_notify_interval else ""
 
@@ -72,7 +76,7 @@ async def callback_trade_notifications_menu(callback: CallbackQuery):
     mafile_id = int(callback.data.split("_")[3])
 
     async with AsyncSessionLocal() as session:
-        mafile = await session.get(Mafile, mafile_id)
+        mafile = await get_owned_mafile(session, mafile_id, callback.from_user.id)
         if not mafile:
             await callback.answer("Аккаунт не найден", show_alert=True)
             return
@@ -133,7 +137,7 @@ async def callback_trade_notify_toggle(callback: CallbackQuery):
     action = parts[4]
 
     async with AsyncSessionLocal() as session:
-        mafile = await session.get(Mafile, mafile_id)
+        mafile = await get_owned_mafile(session, mafile_id, callback.from_user.id)
         if not mafile:
             await callback.answer("Аккаунт не найден", show_alert=True)
             return
@@ -181,7 +185,7 @@ async def callback_trade_notify_interval(callback: CallbackQuery):
     mafile_id = int(callback.data.split("_")[3])
 
     async with AsyncSessionLocal() as session:
-        mafile = await session.get(Mafile, mafile_id)
+        mafile = await get_owned_mafile(session, mafile_id, callback.from_user.id)
         if not mafile:
             await callback.answer("Аккаунт не найден", show_alert=True)
             return
@@ -216,7 +220,7 @@ async def callback_tradelink(callback: CallbackQuery):
     mafile_id = int(callback.data.split("_")[1])
 
     async with AsyncSessionLocal() as session:
-        mafile = await session.get(Mafile, mafile_id)
+        mafile = await get_owned_mafile(session, mafile_id, callback.from_user.id)
         if not mafile:
             await callback.answer("Аккаунт не найден", show_alert=True)
             return
@@ -304,7 +308,7 @@ async def callback_inventory_app(callback: CallbackQuery):
     ITEMS_PER_PAGE = 10  # Уменьшаем до 10 для кнопок
 
     async with AsyncSessionLocal() as session:
-        mafile = await session.get(Mafile, mafile_id)
+        mafile = await get_owned_mafile(session, mafile_id, callback.from_user.id)
         if not mafile:
             await callback.answer("Аккаунт не найден", show_alert=True)
             return
@@ -456,7 +460,7 @@ async def callback_item_detail(callback: CallbackQuery):
     await callback.answer("Загружаю детали предмета...")
 
     async with AsyncSessionLocal() as session:
-        mafile = await session.get(Mafile, mafile_id)
+        mafile = await get_owned_mafile(session, mafile_id, callback.from_user.id)
         if not mafile:
             await callback.answer("Аккаунт не найден", show_alert=True)
             return
@@ -510,7 +514,7 @@ async def callback_item_detail(callback: CallbackQuery):
             price_data = None
             if item.get('marketable') and item.get('market_hash_name'):
                 await client._ensure_session()
-                price_data = await get_item_price(client.session, app_id, item['market_hash_name'], country, currency)
+                price_data = await get_item_price(client, app_id, item['market_hash_name'], country, currency)
 
             # Формируем текст
             text = f"🎒 <b>ДЕТАЛИ ПРЕДМЕТА</b>\n\n"
@@ -830,9 +834,7 @@ async def callback_confirmations_menu(callback: CallbackQuery, send_new: bool = 
         return
 
     async with AsyncSessionLocal() as session:
-        stmt = select(Mafile).where(Mafile.id == mafile_id)
-        result = await session.execute(stmt)
-        mafile = result.scalar_one_or_none()
+        mafile = await get_owned_mafile(session, mafile_id, callback.from_user.id)
 
         if not mafile:
             await callback.answer("Аккаунт не найден", show_alert=True)
@@ -1110,7 +1112,7 @@ async def callback_confirm_single(callback: CallbackQuery):
     conf_key = parts[4]
 
     async with AsyncSessionLocal() as session:
-        mafile = await session.get(Mafile, mafile_id)
+        mafile = await get_owned_mafile(session, mafile_id, callback.from_user.id)
         if not mafile:
             await callback.answer("Аккаунт не найден", show_alert=True)
             return
@@ -1169,7 +1171,7 @@ async def callback_cancel_single(callback: CallbackQuery):
     conf_key = parts[4]
 
     async with AsyncSessionLocal() as session:
-        mafile = await session.get(Mafile, mafile_id)
+        mafile = await get_owned_mafile(session, mafile_id, callback.from_user.id)
         if not mafile:
             await callback.answer("Аккаунт не найден", show_alert=True)
             return
@@ -1203,9 +1205,7 @@ async def callback_confirm_all(callback: CallbackQuery):
     mafile_id = int(callback.data.split("_")[2])
 
     async with AsyncSessionLocal() as session:
-        stmt = select(Mafile).where(Mafile.id == mafile_id)
-        result = await session.execute(stmt)
-        mafile = result.scalar_one_or_none()
+        mafile = await get_owned_mafile(session, mafile_id, callback.from_user.id)
 
         if not mafile:
             await callback.answer("Аккаунт не найден", show_alert=True)
@@ -1301,9 +1301,7 @@ async def callback_cancel_all(callback: CallbackQuery):
     mafile_id = int(callback.data.split("_")[2])
 
     async with AsyncSessionLocal() as session:
-        stmt = select(Mafile).where(Mafile.id == mafile_id)
-        result = await session.execute(stmt)
-        mafile = result.scalar_one_or_none()
+        mafile = await get_owned_mafile(session, mafile_id, callback.from_user.id)
 
         if not mafile:
             await callback.answer("Аккаунт не найден", show_alert=True)
@@ -1630,7 +1628,7 @@ async def callback_trade_accept(callback: CallbackQuery):
         return
 
     async with AsyncSessionLocal() as session:
-        mafile = await session.get(Mafile, mafile_id)
+        mafile = await get_owned_mafile(session, mafile_id, callback.from_user.id)
         if not mafile:
             await callback.answer("Аккаунт не найден", show_alert=True)
             return
@@ -1944,7 +1942,7 @@ async def callback_trade_decline(callback: CallbackQuery):
         return
 
     async with AsyncSessionLocal() as session:
-        mafile = await session.get(Mafile, mafile_id)
+        mafile = await get_owned_mafile(session, mafile_id, callback.from_user.id)
         if not mafile:
             await callback.answer("Аккаунт не найден", show_alert=True)
             return
@@ -2069,7 +2067,7 @@ async def callback_trade_cancel_outgoing(callback: CallbackQuery):
     tradeofferid = parts[3]
 
     async with AsyncSessionLocal() as session:
-        mafile = await session.get(Mafile, mafile_id)
+        mafile = await get_owned_mafile(session, mafile_id, callback.from_user.id)
         if not mafile:
             await callback.answer("Аккаунт не найден", show_alert=True)
             return
@@ -2118,7 +2116,7 @@ async def callback_trades_incoming_active(callback: CallbackQuery):
     page = int(parts[4]) if len(parts) > 4 else 1
 
     async with AsyncSessionLocal() as session:
-        mafile = await session.get(Mafile, mafile_id)
+        mafile = await get_owned_mafile(session, mafile_id, callback.from_user.id)
         if not mafile or not mafile.access_token:
             await callback.answer("Аккаунт не найден или нет сессии", show_alert=True)
             return
@@ -2139,7 +2137,7 @@ async def callback_trades_incoming_history(callback: CallbackQuery):
     page = int(parts[4]) if len(parts) > 4 else 1
 
     async with AsyncSessionLocal() as session:
-        mafile = await session.get(Mafile, mafile_id)
+        mafile = await get_owned_mafile(session, mafile_id, callback.from_user.id)
         if not mafile or not mafile.access_token:
             await callback.answer("Аккаунт не найден или нет сессии", show_alert=True)
             return
@@ -2160,7 +2158,7 @@ async def callback_trades_outgoing_active(callback: CallbackQuery):
     page = int(parts[4]) if len(parts) > 4 else 1
 
     async with AsyncSessionLocal() as session:
-        mafile = await session.get(Mafile, mafile_id)
+        mafile = await get_owned_mafile(session, mafile_id, callback.from_user.id)
         if not mafile or not mafile.access_token:
             await callback.answer("Аккаунт не найден или нет сессии", show_alert=True)
             return
@@ -2181,7 +2179,7 @@ async def callback_trades_outgoing_history(callback: CallbackQuery):
     page = int(parts[4]) if len(parts) > 4 else 1
 
     async with AsyncSessionLocal() as session:
-        mafile = await session.get(Mafile, mafile_id)
+        mafile = await get_owned_mafile(session, mafile_id, callback.from_user.id)
         if not mafile or not mafile.access_token:
             await callback.answer("Аккаунт не найден или нет сессии", show_alert=True)
             return
@@ -2203,7 +2201,7 @@ async def callback_trade_detail_full(callback: CallbackQuery):
     url_type = parts[5] if len(parts) > 5 else "incoming"
 
     async with AsyncSessionLocal() as session:
-        mafile = await session.get(Mafile, mafile_id)
+        mafile = await get_owned_mafile(session, mafile_id, callback.from_user.id)
         if not mafile:
             await callback.answer("Аккаунт не найден", show_alert=True)
             return
@@ -2401,7 +2399,7 @@ async def fetch_and_redirect_trades(original_callback: CallbackQuery, new_msg: M
                                     mafile_id: int, trade_type: str, page: int):
     """Вспомогательная функция для загрузки трейдов в новое сообщение"""
     async with AsyncSessionLocal() as session:
-        mafile = await session.get(Mafile, mafile_id)
+        mafile = await get_owned_mafile(session, mafile_id, original_callback.from_user.id)
         if not mafile or not mafile.access_token:
             await new_msg.edit_text("❌ Аккаунт не найден или нет сессии")
             return
@@ -2439,7 +2437,7 @@ async def callback_set_password(callback: CallbackQuery):
     await callback.message.edit_text(
         "🔑 <b>УСТАНОВКА ПАРОЛЯ</b>\n\n"
         "Отправьте новый пароль для блокировки бота.\n\n"
-        "<i>Минимум 4 символа. Пароль будет зашифрован.</i>\n\n"
+        "<i>Минимум 8 символов. Пароль хранится как защищённый хеш.</i>\n\n"
         "Для отмены нажмите кнопку ниже:",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(
@@ -2462,7 +2460,7 @@ async def callback_change_password(callback: CallbackQuery):
     await callback.message.edit_text(
         "🔑 <b>ИЗМЕНЕНИЕ ПАРОЛЯ</b>\n\n"
         "Отправьте новый пароль для блокировки бота.\n\n"
-        "<i>Минимум 4 символа. Старый пароль будет заменён.</i>\n\n"
+        "<i>Минимум 8 символов. Старый пароль будет заменён.</i>\n\n"
         "Для отмены нажмите кнопку ниже:",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(

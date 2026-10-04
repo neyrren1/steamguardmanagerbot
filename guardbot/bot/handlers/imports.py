@@ -1,5 +1,6 @@
 """Extracted from the legacy bot module without behavior changes."""
 
+from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import Command, CommandObject
 from aiogram.types import Message
 from datetime import datetime
@@ -7,6 +8,7 @@ from guardbot.bot.runtime import bot, dp, user_states
 from guardbot.config import MAX_FILE_SIZE, logger
 from guardbot.database import AsyncSessionLocal, Mafile, User
 from guardbot.security import decrypt_value, encrypt_value
+from guardbot.steam.client import parse_proxy_string, redact_proxy_url
 from sqlalchemy import func, select, text
 import io
 import json
@@ -159,14 +161,14 @@ async def process_mafile_auto(message: Message, user_id: int):
             existing = result.scalar_one_or_none()
 
             if existing:
-                existing.shared_secret = mafile_data.get('shared_secret')
-                existing.identity_secret = mafile_data.get('identity_secret')
-                existing.device_id = mafile_data.get('device_id')
+                existing.shared_secret = encrypt_value(mafile_data.get('shared_secret'))
+                existing.identity_secret = encrypt_value(mafile_data.get('identity_secret'))
+                existing.device_id = encrypt_value(mafile_data.get('device_id'))
                 existing.fully_enrolled = True
 
                 if 'Session' in mafile_data:
-                    existing.access_token = mafile_data['Session'].get('AccessToken')
-                    existing.refresh_token = mafile_data['Session'].get('RefreshToken')
+                    existing.access_token = encrypt_value(mafile_data['Session'].get('AccessToken'))
+                    existing.refresh_token = encrypt_value(mafile_data['Session'].get('RefreshToken'))
                     if mafile_data['Session'].get('SteamID'):
                         existing.steamid = int(mafile_data['Session']['SteamID'])
 
@@ -351,11 +353,7 @@ async def cmd_set_proxy(message: Message, command: CommandObject):
     """
     Установка общего прокси для всех аккаунтов пользователя
     """
-    logger.info(f"Set proxy command received from {message.from_user.id}")
-    logger.info(f"Command args: '{command.args}'")
-
     args = command.args.split() if command.args else []
-    logger.info(f"Parsed args: {args}")
 
     if not args:
         await message.answer(
@@ -366,30 +364,28 @@ async def cmd_set_proxy(message: Message, command: CommandObject):
             "• <code>socks5://</code> - SOCKS5 прокси\n"
             "• <code>socks4://</code> - SOCKS4 прокси\n\n"
             "<b>Примеры:</b>\n"
-            "• HTTP: <code>/set_proxy http://user:pass@192.168.1.1:8080</code>\n"
-            "• SOCKS5: <code>/set_proxy socks5://user:pass@192.168.1.1:1080</code>\n"
-            "• SOCKS5 без авторизации: <code>/set_proxy socks5://192.168.1.1:1080</code>",
+            "• HTTP: <code>/set_proxy http://user:pass@proxy.example.com:8080</code>\n"
+            "• SOCKS5: <code>/set_proxy socks5://user:pass@proxy.example.com:1080</code>\n"
+            "• SOCKS5 без авторизации: <code>/set_proxy socks5://proxy.example.com:1080</code>",
             parse_mode="HTML"
         )
         return
 
-    proxy_url = args[0]
-    logger.info(f"Proxy URL: {proxy_url}")
-
-    # Проверяем что URL содержит протокол
-    if not proxy_url.startswith(('http://', 'https://', 'socks5://', 'socks4://')):
+    try:
+        proxy_url = parse_proxy_string(args[0])
+    except ValueError:
         await message.answer(
-            "❌ <b>Ошибка: прокси должен содержать протокол!</b>\n\n"
-            "Правильные форматы:\n"
-            f"• <code>http://{proxy_url}</code>\n"
-            f"• <code>https://{proxy_url}</code>\n"
-            f"• <code>socks5://{proxy_url}</code>\n"
-            f"• <code>socks4://{proxy_url}</code>\n\n"
-            f"<b>Попробуйте:</b>\n"
-            f"<code>/set_proxy http://{proxy_url}</code>",
+            "❌ <b>Некорректный или небезопасный адрес прокси.</b>\n\n"
+            "Используйте публичный хост и формат "
+            "<code>protocol://user:password@host:port</code>.",
             parse_mode="HTML"
         )
         return
+
+    try:
+        await message.delete()
+    except TelegramAPIError:
+        pass
 
     # Определяем тип прокси для информативности
     proxy_type = "HTTP"
@@ -416,22 +412,22 @@ async def cmd_set_proxy(message: Message, command: CommandObject):
                     general_proxy=encrypt_value(proxy_url)
                 )
                 session.add(user)
-                logger.info(f"Created new user with {proxy_type} proxy: {proxy_url}")
+                logger.info("Created user %s with %s proxy", telegram_id, proxy_type)
             else:
                 user.general_proxy = encrypt_value(proxy_url)
-                logger.info(f"Updated user {proxy_type} proxy to: {proxy_url}")
+                logger.info("Updated %s proxy for user %s", proxy_type, telegram_id)
 
             await session.commit()
 
             await message.answer(
                 f"✅ <b>Общий {proxy_type} прокси установлен!</b>\n\n"
-                f"🌐 <b>Прокси:</b> <code>{proxy_url}</code>\n\n"
+                f"🌐 <b>Прокси:</b> <code>{redact_proxy_url(proxy_url)}</code>\n\n"
                 f"Этот прокси будет использоваться для всех аккаунтов.",
                 parse_mode="HTML"
             )
     except Exception as e:
-        logger.error(f"Error setting proxy: {e}")
-        await message.answer(f"❌ Ошибка при сохранении прокси: {str(e)}")
+        logger.error("Error setting proxy: %s", type(e).__name__)
+        await message.answer("❌ Не удалось сохранить прокси. Проверьте формат адреса.")
 
 @dp.message(Command("set_account_proxy"))
 async def cmd_set_account_proxy(message: Message, command: CommandObject):
@@ -445,8 +441,8 @@ async def cmd_set_account_proxy(message: Message, command: CommandObject):
         await message.answer(
             "❌ <b>Использование:</b> <code>/set_account_proxy [account] [proxy_url]</code>\n\n"
             "<b>Примеры:</b>\n"
-            "• По имени аккаунта:\n<code>/set_account_proxy mylogin http://user:pass@192.168.1.1:8080</code>\n"
-            "• По номеру:\n<code>/set_account_proxy 1 socks5://user:pass@192.168.1.1:1080</code>\n\n"
+            "• По имени аккаунта:\n<code>/set_account_proxy mylogin http://user:pass@proxy.example.com:8080</code>\n"
+            "• По номеру:\n<code>/set_account_proxy 1 socks5://user:pass@proxy.example.com:1080</code>\n\n"
             "<b>Форматы прокси:</b>\n"
             "• <code>protocol://username:password@host:port</code>\n"
             "• <code>protocol://host:port</code> (без авторизации)",
@@ -455,7 +451,16 @@ async def cmd_set_account_proxy(message: Message, command: CommandObject):
         return
 
     account_input = args[0]
-    proxy_url = args[1]
+    try:
+        proxy_url = parse_proxy_string(args[1])
+    except ValueError:
+        await message.answer("❌ Некорректный или небезопасный адрес прокси.")
+        return
+
+    try:
+        await message.delete()
+    except TelegramAPIError:
+        pass
     telegram_id = message.from_user.id
 
     async with AsyncSessionLocal() as session:
@@ -490,7 +495,7 @@ async def cmd_set_account_proxy(message: Message, command: CommandObject):
         await message.answer(
             f"✅ <b>Уникальный прокси установлен!</b>\n\n"
             f"📱 <b>Аккаунт:</b> <code>{mafile.account_name}</code>\n"
-            f"🌐 <b>Прокси:</b> <code>{proxy_url}</code>\n\n"
+            f"🌐 <b>Прокси:</b> <code>{redact_proxy_url(proxy_url)}</code>\n\n"
             f"Этот прокси будет использоваться только для этого аккаунта.",
             parse_mode="HTML"
         )
@@ -573,7 +578,7 @@ async def cmd_my_proxy(message: Message):
         # Общий прокси
         text += "<b>📌 Общий прокси:</b>\n"
         if user and user.general_proxy:
-            text += f"✅ <code>{decrypt_value(user.general_proxy)}</code>\n"
+            text += f"✅ <code>{redact_proxy_url(decrypt_value(user.general_proxy))}</code>\n"
             text += "💡 <code>/remove_proxy</code> - удалить общий прокси\n\n"
         else:
             text += "❌ <i>Не настроен</i>\n"
@@ -587,7 +592,7 @@ async def cmd_my_proxy(message: Message):
                 if mf.unique_proxy and mf.proxy:
                     has_unique = True
                     text += f"{idx}. <code>{mf.account_name}</code>\n"
-                    text += f"   🌐 <code>{decrypt_value(mf.proxy)}</code>\n"
+                    text += f"   🌐 <code>{redact_proxy_url(decrypt_value(mf.proxy))}</code>\n"
                     text += f"   💡 <code>/remove_account_proxy {mf.account_name}</code>\n"
 
             if not has_unique:

@@ -3,11 +3,12 @@
 from aiogram import F
 from aiogram.filters import Command, CommandObject
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
-from aiohttp_socks import ProxyConnector
+
 from guardbot.bot.runtime import dp, require_proxy, stop_trade_check_task, user_states
 from guardbot.config import logger
 from guardbot.database import AsyncSessionLocal, Mafile, User, save_user
 from guardbot.security import decrypt_value
+from guardbot.steam.client import probe_proxy_external_ip, redact_proxy_url
 from sqlalchemy import select
 import aiohttp
 import asyncio
@@ -431,9 +432,6 @@ async def cmd_test_proxy(message: Message, command: CommandObject):
         return
 
     account_input = args[0]
-    test_session = None
-    test_connector = None
-
     try:
         # Проверка общего прокси
         if account_input.lower() == 'general':
@@ -452,25 +450,15 @@ async def cmd_test_proxy(message: Message, command: CommandObject):
                     return
 
                 proxy = decrypt_value(user.general_proxy)
+                if not proxy:
+                    raise ValueError("Сохранённый прокси пуст")
                 status_msg = await message.answer("🔄 <b>Проверяю общий прокси...</b>", parse_mode="HTML")
 
-                # 🔥 СОКС ПОДДЕРЖКА
-                if proxy.startswith(('socks5://', 'socks4://')):
-                    test_connector = ProxyConnector.from_url(proxy, ssl=False)
-                    test_session = aiohttp.ClientSession(connector=test_connector, timeout=aiohttp.ClientTimeout(total=30))
-
-                    async with test_session.get('http://httpbin.org/ip') as resp:
-                        ip_data = await resp.json()
-                        external_ip = ip_data.get('origin', 'Unknown')
-                else:
-                    test_session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30))
-                    async with test_session.get('http://httpbin.org/ip', proxy=proxy, ssl=False) as resp:
-                        ip_data = await resp.json()
-                        external_ip = ip_data.get('origin', 'Unknown')
+                external_ip = await probe_proxy_external_ip(proxy)
 
                 await status_msg.edit_text(
                     f"✅ <b>Общий прокси работает!</b>\n\n"
-                    f"🌐 <b>Прокси:</b> <code>{proxy}</code>\n"
+                    f"🌐 <b>Прокси:</b> <code>{redact_proxy_url(proxy)}</code>\n"
                     f"📍 <b>Внешний IP:</b> <code>{external_ip}</code>\n\n"
                     f"Теперь можете использовать /login",
                     parse_mode="HTML"
@@ -524,25 +512,13 @@ async def cmd_test_proxy(message: Message, command: CommandObject):
                 )
                 return
 
-            # 🔥 СОКС ПОДДЕРЖКА
-            if proxy.startswith(('socks5://', 'socks4://')):
-                test_connector = ProxyConnector.from_url(proxy, ssl=False)
-                test_session = aiohttp.ClientSession(connector=test_connector, timeout=aiohttp.ClientTimeout(total=30))
-
-                async with test_session.get('http://httpbin.org/ip') as resp:
-                    ip_data = await resp.json()
-                    external_ip = ip_data.get('origin', 'Unknown')
-            else:
-                test_session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30))
-                async with test_session.get('http://httpbin.org/ip', proxy=proxy, ssl=False) as resp:
-                    ip_data = await resp.json()
-                    external_ip = ip_data.get('origin', 'Unknown')
+            external_ip = await probe_proxy_external_ip(proxy)
 
             await status_msg.edit_text(
                 f"✅ <b>Прокси работает!</b>\n\n"
                 f"📱 <b>Аккаунт:</b> <code>{mafile.account_name}</code>\n"
                 f"🔧 <b>Тип прокси:</b> {proxy_type}\n"
-                f"🌐 <b>Прокси:</b> <code>{proxy}</code>\n"
+                f"🌐 <b>Прокси:</b> <code>{redact_proxy_url(proxy)}</code>\n"
                 f"📍 <b>Внешний IP:</b> <code>{external_ip}</code>\n\n"
                 f"Теперь можете использовать /login {mafile.account_name}",
                 parse_mode="HTML"
@@ -551,31 +527,26 @@ async def cmd_test_proxy(message: Message, command: CommandObject):
     except aiohttp.ClientProxyConnectionError as e:
         await status_msg.edit_text(
             f"❌ <b>Ошибка подключения к прокси!</b>\n"
-            f"<code>{str(e)}</code>\n\n"
-            f"<b>Прокси:</b> <code>{proxy}</code>",
+            f"<code>{type(e).__name__}</code>\n\n"
+            f"<b>Прокси:</b> <code>{redact_proxy_url(proxy)}</code>",
             parse_mode="HTML"
         )
     except aiohttp.ClientResponseError as e:
         await status_msg.edit_text(
             f"❌ <b>Ошибка ответа от прокси (код {e.status})!</b>\n"
-            f"<b>Прокси:</b> <code>{proxy}</code>",
+            f"<b>Прокси:</b> <code>{redact_proxy_url(proxy)}</code>",
             parse_mode="HTML"
         )
     except asyncio.TimeoutError:
         await status_msg.edit_text(
             f"❌ <b>Таймаут соединения!</b>\n\n"
-            f"<b>Прокси:</b> <code>{proxy}</code>",
+            f"<b>Прокси:</b> <code>{redact_proxy_url(proxy)}</code>",
             parse_mode="HTML"
         )
     except Exception as e:
         await status_msg.edit_text(
             f"❌ <b>Ошибка соединения:</b>\n"
-            f"<code>{type(e).__name__}: {str(e)}</code>\n\n"
-            f"<b>Прокси:</b> <code>{proxy}</code>",
+            f"<code>{type(e).__name__}</code>\n\n"
+            f"<b>Прокси:</b> <code>{redact_proxy_url(proxy)}</code>",
             parse_mode="HTML"
         )
-    finally:
-        if test_session and not test_session.closed:
-            await test_session.close()
-        if test_connector:
-            await test_connector.close()
