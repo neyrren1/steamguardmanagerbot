@@ -84,8 +84,8 @@ async def handle_messages(message: Message):
                 keyboard = InlineKeyboardMarkup(
                     inline_keyboard=[
                         [
-                            InlineKeyboardButton(text="🔑 Войти по паролю", callback_data=f"action_login_{mafile_id}"),
-                            InlineKeyboardButton(text="🔄 Войти по токену", callback_data=f"try_refresh_{mafile_id}")
+                            InlineKeyboardButton(text="🔑 Войти по паролю", callback_data=f"action_login_{mafile.id}"),
+                            InlineKeyboardButton(text="🔄 Войти по токену", callback_data=f"try_refresh_{mafile.id}")
                         ],
                         [InlineKeyboardButton(
                             text="👤 К аккаунту",
