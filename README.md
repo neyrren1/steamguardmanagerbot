@@ -4,7 +4,10 @@ Telegram-бот для управления Steam-аккаунтами, кода
 
 ## Структура
 
-- `guardbot/steam/client.py` — асинхронный Steam-клиент.
+- `guardbot/steam/client.py` — совместимый фасад клиента и защищённый HTTP transport.
+- `guardbot/steam/mixins/` — отдельные Steam-функции: инвентарь, трейды,
+  подтверждения, Market, профиль, recovery и рендеринг.
+- `guardbot/steam/assets.py` — проверка URL ресурсов Steam CDN.
 - `guardbot/security.py` — загрузка конфигурации и шифрование.
 - `guardbot/database.py` — модели SQLAlchemy и инициализация БД.
 - `guardbot/services/session_manager.py` — сохранение и восстановление Steam-сессий.

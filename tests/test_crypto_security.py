@@ -148,28 +148,39 @@ def test_handlers_do_not_store_sensitive_mafile_fields_as_plaintext() -> None:
 
 
 def test_steam_client_does_not_log_cookies_or_session_ids() -> None:
-    source_path = Path(__file__).parents[1] / "guardbot" / "steam" / "client.py"
-    tree = ast.parse(source_path.read_text(encoding="utf-8"))
+    steam_root = Path(__file__).parents[1] / "guardbot" / "steam"
     offenders: list[str] = []
 
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
-            continue
-        if node.func.attr not in {"debug", "info", "warning", "error", "critical"}:
-            continue
-        rendered = ast.unparse(node)
-        forbidden_fragments = (
-            "cookie.value",
-            "sessionid[",
-            "sessionid_before[",
-            "response_text[",
-            "text_preview",
-            "HTML preview",
-            "Full response data",
-            "Raw (first",
-        )
-        if any(fragment in rendered for fragment in forbidden_fragments):
-            offenders.append(f"client.py:{node.lineno}")
+    for source_path in steam_root.rglob("*.py"):
+        tree = ast.parse(source_path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not isinstance(
+                node.func, ast.Attribute
+            ):
+                continue
+            if node.func.attr not in {
+                "debug",
+                "info",
+                "warning",
+                "error",
+                "critical",
+            }:
+                continue
+            rendered = ast.unparse(node)
+            forbidden_fragments = (
+                "cookie.value",
+                "sessionid[",
+                "sessionid_before[",
+                "response_text[",
+                "text_preview",
+                "HTML preview",
+                "Full response data",
+                "Raw (first",
+            )
+            if any(fragment in rendered for fragment in forbidden_fragments):
+                offenders.append(
+                    f"{source_path.relative_to(steam_root)}:{node.lineno}"
+                )
 
     assert offenders == []
 

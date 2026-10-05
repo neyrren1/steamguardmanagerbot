@@ -10,6 +10,10 @@ from guardbot.steam import client as steam_client
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def _steam_source_paths() -> list[Path]:
+    return sorted((ROOT / "guardbot/steam").rglob("*.py"))
+
+
 def test_network_session_requires_proxy_before_client_creation(monkeypatch) -> None:
     def unexpected_client_session(*args, **kwargs):
         raise AssertionError(
@@ -72,19 +76,20 @@ def test_proxy_connector_keeps_tls_verification_enabled(monkeypatch) -> None:
 
 
 def test_every_proxy_connector_requires_remote_destination_dns() -> None:
-    source_path = ROOT / "guardbot" / "steam" / "client.py"
-    tree = ast.parse(source_path.read_text(encoding="utf-8"))
-    connector_calls = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "from_url"
-        and isinstance(node.func.value, ast.Name)
-        and node.func.value.id == "ProxyConnector"
-    ]
+    connector_calls: list[ast.Call] = []
+    for source_path in _steam_source_paths():
+        tree = ast.parse(source_path.read_text(encoding="utf-8"))
+        connector_calls.extend(
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "from_url"
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "ProxyConnector"
+        )
 
-    assert len(connector_calls) == 2
+    assert connector_calls
     for call in connector_calls:
         assert any(
             keyword.arg == "rdns"
@@ -95,14 +100,20 @@ def test_every_proxy_connector_requires_remote_destination_dns() -> None:
 
 
 def test_steam_requests_never_disable_tls_verification() -> None:
-    files = [
-        ROOT / "guardbot/steam/client.py",
-        ROOT / "guardbot/bot/runtime.py",
-    ]
+    files = [*_steam_source_paths(), ROOT / "guardbot/bot/runtime.py"]
     offenders: list[str] = []
 
     for path in files:
-        tree = ast.parse(path.read_text(encoding="utf-8"))
+        source = path.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        for forbidden in (
+            "verify_ssl=False",
+            "_create_unverified_context",
+            "CERT_NONE",
+            "check_hostname = False",
+        ):
+            if forbidden in source:
+                offenders.append(f"{path.relative_to(ROOT)}:{forbidden}")
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
@@ -118,44 +129,43 @@ def test_steam_requests_never_disable_tls_verification() -> None:
 
 
 def test_every_direct_steam_session_request_rechecks_proxy_transport() -> None:
-    source_path = ROOT / "guardbot" / "steam" / "client.py"
-    tree = ast.parse(source_path.read_text(encoding="utf-8"))
     offenders: list[str] = []
 
-    for class_node in (
-        node
-        for node in tree.body
-        if isinstance(node, ast.ClassDef)
-        and node.name in {"AsyncSteamSession", "AsyncSteamMobile"}
-    ):
-        for function in (
-            node
-            for node in class_node.body
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    for source_path in _steam_source_paths():
+        tree = ast.parse(source_path.read_text(encoding="utf-8"))
+        for class_node in (
+            node for node in tree.body if isinstance(node, ast.ClassDef)
         ):
-            direct_requests = [
+            for function in (
                 node
-                for node in ast.walk(function)
-                if isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Attribute)
-                and node.func.attr in {"get", "post", "request"}
-                and isinstance(node.func.value, ast.Attribute)
-                and isinstance(node.func.value.value, ast.Name)
-                and node.func.value.value.id == "self"
-                and node.func.value.attr == "session"
-            ]
-            if not direct_requests:
-                continue
-            checks_transport = any(
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Attribute)
-                and isinstance(node.func.value, ast.Name)
-                and node.func.value.id == "self"
-                and node.func.attr == "_ensure_session"
-                for node in ast.walk(function)
-            )
-            if not checks_transport:
-                offenders.append(f"{function.name}:{function.lineno}")
+                for node in class_node.body
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            ):
+                direct_requests = [
+                    node
+                    for node in ast.walk(function)
+                    if isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                    and node.func.attr in {"get", "post", "request"}
+                    and isinstance(node.func.value, ast.Attribute)
+                    and isinstance(node.func.value.value, ast.Name)
+                    and node.func.value.value.id == "self"
+                    and node.func.value.attr == "session"
+                ]
+                if not direct_requests:
+                    continue
+                checks_transport = any(
+                    isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                    and isinstance(node.func.value, ast.Name)
+                    and node.func.value.id == "self"
+                    and node.func.attr == "_ensure_session"
+                    for node in ast.walk(function)
+                )
+                if not checks_transport:
+                    offenders.append(
+                        f"{source_path.relative_to(ROOT)}:{function.name}:{function.lineno}"
+                    )
 
     assert offenders == []
 
