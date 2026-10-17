@@ -139,7 +139,6 @@ _SECRET_PROMPT_CALLBACK_PREFIXES = (
 _SECRET_LEGACY_STATES = {
     "waiting_email_code",
     "waiting_mafile",
-    "waiting_password_for_mafile",
     "waiting_steam_code",
     "waiting_steam_code_manual",
     "waiting_steam_code_or_mafile",

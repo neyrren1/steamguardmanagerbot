@@ -7,6 +7,7 @@ _REMOVED_STATES = (
     "waiting_shared_secret",
     "waiting_device_id",
     "waiting_identity_secret",
+    "waiting_password_for_mafile",
 )
 
 

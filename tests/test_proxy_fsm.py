@@ -92,7 +92,7 @@ def test_proxy_callbacks_start_typed_flow_before_prompt(
     async def scenario() -> None:
         state = _state()
         await state.update_data(stale=True)
-        runtime.user_states[USER_ID] = {"state": "waiting_password_for_mafile"}
+        runtime.user_states[USER_ID] = {"state": "waiting_mafile"}
         callback = Callback(state, f"{handler_name.removeprefix('callback_')}_42")
 
         try:

@@ -32,7 +32,7 @@ def test_all_mafile_constructor_passwords_are_encrypted() -> None:
     assert violations == []
 
 
-def test_pending_mafile_payload_is_not_kept_as_plaintext_state() -> None:
+def test_removed_pending_mafile_password_flow_cannot_store_payload() -> None:
     imports_source = Path("guardbot/bot/handlers/imports.py").read_text(
         encoding="utf-8"
     )
@@ -42,8 +42,8 @@ def test_pending_mafile_payload_is_not_kept_as_plaintext_state() -> None:
 
     assert '"mafile_data": mafile_data' not in imports_source
     assert 'state_data.get("mafile_data")' not in messages_source
-    assert '"encrypted_mafile_data"' in imports_source
-    assert 'state_data.get("encrypted_mafile_data")' in messages_source
+    assert '"encrypted_mafile_data"' not in imports_source
+    assert 'state_data.get("encrypted_mafile_data")' not in messages_source
 
 
 def test_device_id_is_not_echoed_back_into_telegram_history() -> None:
