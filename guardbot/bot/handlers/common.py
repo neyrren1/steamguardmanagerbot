@@ -1,10 +1,24 @@
 """Extracted from the legacy bot module without behavior changes."""
 
+from html import escape
+
 from aiogram import F
+from aiogram.enums import ChatType
 from aiogram.filters import Command, CommandObject
+from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from guardbot.bot.runtime import dp, require_proxy, stop_trade_check_task, user_states
+from guardbot.bot.main_menu import build_main_menu_view, edit_main_menu, send_main_menu
+from guardbot.bot.runtime import (
+    callback_feedback,
+    clear_legacy_user_state,
+    clear_user_workflows,
+    dp,
+    require_proxy,
+    set_legacy_user_state,
+    stop_trade_check_task,
+    user_states,
+)
 from guardbot.config import logger
 from guardbot.database import AsyncSessionLocal, Mafile, User, save_user
 from guardbot.security import decrypt_value
@@ -64,8 +78,18 @@ async def cmd_delete_all_accs(message: Message, command: CommandObject):
 @dp.message(Command("start"))
 @dp.message(Command("help"))
 @dp.message(Command("menu"))
-async def cmd_start_help(message: Message):
+async def cmd_start_help(message: Message, state: FSMContext | None = None):
     user = message.from_user
+    if user is None:
+        raise RuntimeError("Telegram user is unavailable for this message")
+    await clear_user_workflows(user.id, state)
+
+    if getattr(message.chat, "type", ChatType.PRIVATE) != ChatType.PRIVATE:
+        await message.answer(
+            "🔒 Главное меню с данными аккаунтов доступно только в личном чате с ботом."
+        )
+        return
+
     await save_user(
         telegram_id=user.id,
         username=user.username,
@@ -77,85 +101,28 @@ async def cmd_start_help(message: Message):
         result = await session.execute(stmt)
         mafiles = result.scalars().all()
 
-        accounts_count = len(mafiles)
-        accounts_with_2fa = len([mf for mf in mafiles if mf.shared_secret])
-        accounts_logged = len([mf for mf in mafiles if (
-            mf.access_token and mf.refresh_token and mf.password and mf.password.strip()
-        )])
+    if message.bot is None:
+        raise RuntimeError("Telegram bot is unavailable for this message")
 
-    welcome_text = (
-        "👋 <b>Привет, " + (user.full_name or user.username or 'пользователь') + "!</b>\n\n"
-        "🎮 <b>Steam Guard Manager Bot</b> - ваш надежный помощник для управления Steam аккаунтами и Steam Guard кодами.\n\n"
-        "📊 <b>Ваша статистика:</b>\n"
-        "├─ Аккаунтов: <b>" + str(accounts_count) + "</b>\n"
-        "├─ С 2FA: <b>" + str(accounts_with_2fa) + "</b>\n"
-        "└─ Авторизовано: <b>" + str(accounts_logged) + "</b>\n\n"
-        "⚡ <b>Быстрые команды:</b>\n"
-        "<code>/gc [аккаунт]</code> - получить Steam Guard код\n"
-        "<code>/add</code> - добавить аккаунт\n"
-        "<code>/conf [аккаунт]</code> - посмотреть подтверждения на аккаунте\n"
-        "<code>/trades [аккаунт]</code> - открыть меню с трейдами\n"
-        "<code>/inv [аккаунт]</code> - открыть меню с инвентарем\n"
-        "<code>/login [аккаунт]</code> - войти в аккаунт\n\n"
-        "Выберите действие ниже 👇"
+    view = build_main_menu_view(
+        user.full_name or user.username or "пользователь",
+        mafiles,
+        telegram_id=user.id,
+    )
+    await send_main_menu(
+        message.bot,
+        message.chat.id,
+        view,
+        message_thread_id=message.message_thread_id,
+        business_connection_id=message.business_connection_id,
     )
 
-    keyboard_buttons = []
-
-    # 1. Информация и Инструкция
-    keyboard_buttons.append([
-        InlineKeyboardButton(text="ℹ️ Информация", callback_data="info"),
-        InlineKeyboardButton(text="📚 Инструкция", callback_data="instruction")
-    ])
-
-    # 2. Аккаунт(ы)
-    if accounts_count == 0:
-        keyboard_buttons.append([
-            InlineKeyboardButton(text="➕ Добавить аккаунт", callback_data="add_account")
-        ])
-    elif accounts_count == 1:
-        mafile = mafiles[0]
-        keyboard_buttons.append([
-            InlineKeyboardButton(text="👤 Мой аккаунт", callback_data=f"account_detail_{mafile.id}")
-        ])
-        keyboard_buttons.append([
-            InlineKeyboardButton(text="➕ Добавить аккаунт", callback_data="add_account")
-        ])
-    else:
-        keyboard_buttons.append([
-            InlineKeyboardButton(text="👤 Мои аккаунты", callback_data="my_accounts")
-        ])
-
-    # ГРУППЫ
-
-    if accounts_count > 1:
-        keyboard_buttons.append([
-            InlineKeyboardButton(text="📂 Группы", callback_data="groups_menu")
-        ])
-
-    # 3. Настройки
-    keyboard_buttons.append([
-        InlineKeyboardButton(text="⚙️ Настройки", callback_data="settings")
-    ])
-
-    # 4. Импорт
-    keyboard_buttons.append([
-        InlineKeyboardButton(text="📦 Импорт log:pass", callback_data="bulk_import_menu"),
-        InlineKeyboardButton(text="📁 Импорт mafile", callback_data="mafile_instruction")
-    ])
-
-    # 5. Получить код
-    keyboard_buttons.append([
-        InlineKeyboardButton(text="🔐 Получить код", switch_inline_query_current_chat="/gc ")
-    ])
-
-    keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
-
-    await message.answer(welcome_text, parse_mode="HTML", reply_markup=keyboard)
-
 @dp.message(Command("commands"))
-async def cmd_commands(message: Message):
+async def cmd_commands(message: Message, state: FSMContext | None = None):
     """Список всех команд бота"""
+    if message.from_user is None:
+        raise RuntimeError("Telegram user is unavailable for this message")
+    await clear_user_workflows(message.from_user.id, state)
     commands_text = (
         "📋 <b>СПИСОК ВСЕХ КОМАНД</b>\n\n"
 
@@ -296,45 +263,70 @@ async def cmd_remove_general_proxy(message: Message):
 @require_proxy
 async def cmd_bulk_import(message: Message, **kwargs):  # добавить **kwargs
     """Массовый импорт аккаунтов"""
-    user_states[message.from_user.id] = {"state": "waiting_bulk_credentials"}
-
-    await message.answer(
-        "📦 <b>МАССОВЫЙ ИМПОРТ АККАУНТОВ</b>\n\n"
-        "Отправьте список аккаунтов в формате:\n"
-        "<code>login1:password1</code>\n"
-        "<code>login2:password2</code>\n\n"
-        "Для отмены используйте /cancel",
-        parse_mode="HTML"
+    await set_legacy_user_state(
+        message.from_user.id,
+        {"state": "waiting_bulk_credentials"},
     )
+
+    try:
+        await message.answer(
+            "📦 <b>МАССОВЫЙ ИМПОРТ АККАУНТОВ</b>\n\n"
+            "Отправьте список аккаунтов в формате:\n"
+            "<code>login1:password1</code>\n"
+            "<code>login2:password2</code>\n\n"
+            "Для отмены используйте /cancel",
+            parse_mode="HTML"
+        )
+    except Exception:
+        await clear_legacy_user_state(message.from_user.id)
+        raise
 
 
 @dp.callback_query(F.data == "bulk_import_menu")
 async def callback_bulk_import_menu(callback: CallbackQuery):
     """Кнопка массового импорта из меню"""
-    user_states[callback.from_user.id] = {"state": "waiting_bulk_credentials"}
-
-    await callback.message.edit_text(
-        "📦 <b>МАССОВЫЙ ИМПОРТ АККАУНТОВ</b>\n\n"
-        "Отправьте список аккаунтов в формате:\n"
-        "<code>login1:password1</code>\n"
-        "<code>login2:password2</code>\n\n"
-        "Для отмены нажмите кнопку ниже:",
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_state_to_start")]  # 🔥 Изменено
-            ]
-        )
+    await callback_feedback(callback)
+    await set_legacy_user_state(
+        callback.from_user.id,
+        {"state": "waiting_bulk_credentials"},
     )
-    await callback.answer()
+
+    try:
+        await callback.message.edit_text(
+            "📦 <b>МАССОВЫЙ ИМПОРТ АККАУНТОВ</b>\n\n"
+            "Отправьте список аккаунтов в формате:\n"
+            "<code>login1:password1</code>\n"
+            "<code>login2:password2</code>\n\n"
+            "Для отмены нажмите кнопку ниже:",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_state_to_start")]
+                ]
+            )
+        )
+    except Exception:
+        await clear_legacy_user_state(callback.from_user.id)
+        raise
 
 @dp.callback_query(F.data == "cancel_state_to_start")
-async def callback_cancel_state_to_start(callback: CallbackQuery):
+async def callback_cancel_state_to_start(
+    callback: CallbackQuery,
+    state: FSMContext | None = None,
+):
     """Отмена текущего действия и возврат в главное меню"""
     user_id = callback.from_user.id
-    if user_id in user_states:
-        user_states.pop(user_id)
-        logger.info(f"Cleared state for user {user_id}")
+    await clear_user_workflows(user_id, state)
+
+    chat = getattr(callback.message, "chat", None)
+    if getattr(chat, "type", ChatType.PRIVATE) != ChatType.PRIVATE:
+        await callback_feedback(
+            callback,
+            "🔒 Главное меню доступно только в личном чате с ботом.",
+            show_alert=True,
+        )
+        return
+    await callback_feedback(callback, "❌ Действие отменено")
 
     user = callback.from_user
 
@@ -343,75 +335,12 @@ async def callback_cancel_state_to_start(callback: CallbackQuery):
         result = await session.execute(stmt)
         mafiles = result.scalars().all()
 
-        accounts_count = len(mafiles)
-        accounts_with_2fa = len([mf for mf in mafiles if mf.shared_secret])
-        accounts_logged = len([mf for mf in mafiles if (
-            mf.access_token and mf.refresh_token and mf.password and mf.password.strip()
-        )])
-
-    welcome_text = (
-        "👋 <b>Привет, " + (user.full_name or user.username or 'пользователь') + "!</b>\n\n"
-        "🎮 <b>Steam Guard Manager Bot</b> - ваш надежный помощник для управления Steam аккаунтами и Steam Guard кодами.\n\n"
-        "📊 <b>Ваша статистика:</b>\n"
-        "├─ Аккаунтов: <b>" + str(accounts_count) + "</b>\n"
-        "├─ С 2FA: <b>" + str(accounts_with_2fa) + "</b>\n"
-        "└─ Авторизовано: <b>" + str(accounts_logged) + "</b>\n\n"
-        "⚡ <b>Быстрые команды:</b>\n"
-        "<code>/gc [аккаунт]</code> - получить Steam Guard код\n"
-        "<code>/add</code> - добавить аккаунт\n"
-        "<code>/conf [аккаунт]</code> - посмотреть подтверждения на аккаунте\n"
-        "<code>/trades [аккаунт]</code> - открыть меню с трейдами\n"
-        "<code>/inv [аккаунт]</code> - открыть меню с инвентарем\n"
-        "<code>/login [аккаунт]</code> - войти в аккаунт\n\n"
-        "Выберите действие ниже 👇"
+    view = build_main_menu_view(
+        user.full_name or user.username or "пользователь",
+        mafiles,
+        telegram_id=user.id,
     )
-
-    keyboard_buttons = []
-
-    keyboard_buttons.append([
-        InlineKeyboardButton(text="ℹ️ Информация", callback_data="info"),
-        InlineKeyboardButton(text="📚 Инструкция", callback_data="instruction")
-    ])
-
-    if accounts_count == 0:
-        keyboard_buttons.append([
-            InlineKeyboardButton(text="➕ Добавить аккаунт", callback_data="add_account")
-        ])
-    elif accounts_count == 1:
-        mafile = mafiles[0]
-        keyboard_buttons.append([
-            InlineKeyboardButton(text="👤 Мой аккаунт", callback_data=f"account_detail_{mafile.id}")
-        ])
-        keyboard_buttons.append([
-            InlineKeyboardButton(text="➕ Добавить аккаунт", callback_data="add_account")
-        ])
-    else:
-        keyboard_buttons.append([
-            InlineKeyboardButton(text="👤 Мои аккаунты", callback_data="my_accounts")
-        ])
-
-    if accounts_count > 1:
-        keyboard_buttons.append([
-            InlineKeyboardButton(text="📂 Группы", callback_data="groups_menu")
-        ])
-
-    keyboard_buttons.append([
-        InlineKeyboardButton(text="⚙️ Настройки", callback_data="settings")
-    ])
-
-    keyboard_buttons.append([
-        InlineKeyboardButton(text="📦 Импорт log:pass", callback_data="bulk_import_menu"),
-        InlineKeyboardButton(text="📁 Импорт mafile", callback_data="mafile_instruction")
-    ])
-
-    keyboard_buttons.append([
-        InlineKeyboardButton(text="🔐 Получить код", switch_inline_query_current_chat="/gc ")
-    ])
-
-    keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
-
-    await callback.message.edit_text(welcome_text, parse_mode="HTML", reply_markup=keyboard)
-    await callback.answer("❌ Действие отменено")
+    await edit_main_menu(callback.message, view)
 
 @dp.message(Command("test_proxy"))
 async def cmd_test_proxy(message: Message, command: CommandObject):
@@ -458,8 +387,8 @@ async def cmd_test_proxy(message: Message, command: CommandObject):
 
                 await status_msg.edit_text(
                     f"✅ <b>Общий прокси работает!</b>\n\n"
-                    f"🌐 <b>Прокси:</b> <code>{redact_proxy_url(proxy)}</code>\n"
-                    f"📍 <b>Внешний IP:</b> <code>{external_ip}</code>\n\n"
+                    f"🌐 <b>Прокси:</b> <code>{escape(str(redact_proxy_url(proxy)))}</code>\n"
+                    f"📍 <b>Внешний IP:</b> <code>{escape(str(external_ip))}</code>\n\n"
                     f"Теперь можете использовать /login",
                     parse_mode="HTML"
                 )
@@ -484,7 +413,7 @@ async def cmd_test_proxy(message: Message, command: CommandObject):
                 mafile = next((mf for mf in mafiles if mf.account_name == account_input), None)
 
             if not mafile:
-                await message.answer(f"❌ Аккаунт <b>{account_input}</b> не найден", parse_mode="HTML")
+                await message.answer(f"❌ Аккаунт <b>{escape(str(account_input))}</b> не найден", parse_mode="HTML")
                 return
 
             status_msg = await message.answer("🔄 <b>Проверяю прокси соединение...</b>", parse_mode="HTML")
@@ -504,10 +433,10 @@ async def cmd_test_proxy(message: Message, command: CommandObject):
 
             if not proxy:
                 await status_msg.edit_text(
-                    f"❌ <b>Прокси не настроен для аккаунта {mafile.account_name}!</b>\n\n"
+                    f"❌ <b>Прокси не настроен для аккаунта {escape(str(mafile.account_name))}!</b>\n\n"
                     "Настройте прокси:\n"
                     "<code>/set_proxy http://user:pass@host:port</code> - общий\n"
-                    f"<code>/set_account_proxy {mafile.account_name} http://user:pass@host:port</code> - уникальный",
+                    f"<code>/set_account_proxy {escape(str(mafile.account_name))} http://user:pass@host:port</code> - уникальный",
                     parse_mode="HTML"
                 )
                 return
@@ -516,11 +445,11 @@ async def cmd_test_proxy(message: Message, command: CommandObject):
 
             await status_msg.edit_text(
                 f"✅ <b>Прокси работает!</b>\n\n"
-                f"📱 <b>Аккаунт:</b> <code>{mafile.account_name}</code>\n"
+                f"📱 <b>Аккаунт:</b> <code>{escape(str(mafile.account_name))}</code>\n"
                 f"🔧 <b>Тип прокси:</b> {proxy_type}\n"
-                f"🌐 <b>Прокси:</b> <code>{redact_proxy_url(proxy)}</code>\n"
-                f"📍 <b>Внешний IP:</b> <code>{external_ip}</code>\n\n"
-                f"Теперь можете использовать /login {mafile.account_name}",
+                f"🌐 <b>Прокси:</b> <code>{escape(str(redact_proxy_url(proxy)))}</code>\n"
+                f"📍 <b>Внешний IP:</b> <code>{escape(str(external_ip))}</code>\n\n"
+                f"Теперь можете использовать /login {escape(str(mafile.account_name))}",
                 parse_mode="HTML"
             )
 
@@ -528,25 +457,25 @@ async def cmd_test_proxy(message: Message, command: CommandObject):
         await status_msg.edit_text(
             f"❌ <b>Ошибка подключения к прокси!</b>\n"
             f"<code>{type(e).__name__}</code>\n\n"
-            f"<b>Прокси:</b> <code>{redact_proxy_url(proxy)}</code>",
+            f"<b>Прокси:</b> <code>{escape(str(redact_proxy_url(proxy)))}</code>",
             parse_mode="HTML"
         )
     except aiohttp.ClientResponseError as e:
         await status_msg.edit_text(
             f"❌ <b>Ошибка ответа от прокси (код {e.status})!</b>\n"
-            f"<b>Прокси:</b> <code>{redact_proxy_url(proxy)}</code>",
+            f"<b>Прокси:</b> <code>{escape(str(redact_proxy_url(proxy)))}</code>",
             parse_mode="HTML"
         )
     except asyncio.TimeoutError:
         await status_msg.edit_text(
             f"❌ <b>Таймаут соединения!</b>\n\n"
-            f"<b>Прокси:</b> <code>{redact_proxy_url(proxy)}</code>",
+            f"<b>Прокси:</b> <code>{escape(str(redact_proxy_url(proxy)))}</code>",
             parse_mode="HTML"
         )
     except Exception as e:
         await status_msg.edit_text(
             f"❌ <b>Ошибка соединения:</b>\n"
             f"<code>{type(e).__name__}</code>\n\n"
-            f"<b>Прокси:</b> <code>{redact_proxy_url(proxy)}</code>",
+            f"<b>Прокси:</b> <code>{escape(str(redact_proxy_url(proxy)))}</code>",
             parse_mode="HTML"
         )

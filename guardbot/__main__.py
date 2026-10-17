@@ -4,7 +4,22 @@ import asyncio
 
 from guardbot import database, security
 from guardbot.bot import runtime
-from guardbot.bot.handlers import accounts, bulk_import, commands, common, features, groups, imports, inline, messages
+
+# Registration order is significant: the unfiltered message handler must stay last.
+# isort: off
+from guardbot.bot.handlers import (  # noqa: F401 - imports register handlers
+    accounts,
+    bulk_import,
+    commands,
+    common,
+    features,
+    groups,
+    imports,
+    inline,
+    rich_demo,
+    messages,
+)
+# isort: on
 
 
 async def main() -> None:

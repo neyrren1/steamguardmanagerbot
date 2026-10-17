@@ -109,7 +109,7 @@ def init_engine():
     global engine
     engine = create_async_engine(
         security.DATABASE_URL,
-        echo=True,
+        echo=False,
         pool_pre_ping=True,
         pool_recycle=3600,
         pool_size=10,

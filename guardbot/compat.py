@@ -6,6 +6,9 @@ from guardbot.security import *
 from guardbot.database import *
 from guardbot.services.session_manager import *
 from guardbot.bot.runtime import *
+
+# Handler imports register routes; the unfiltered messages module must stay last.
+# isort: off
 from guardbot.bot.handlers.common import *
 from guardbot.bot.handlers.imports import *
 from guardbot.bot.handlers.accounts import *
@@ -14,4 +17,6 @@ from guardbot.bot.handlers.bulk_import import *
 from guardbot.bot.handlers.features import *
 from guardbot.bot.handlers.groups import *
 from guardbot.bot.handlers.inline import *
+from guardbot.bot.handlers.rich_demo import *
 from guardbot.bot.handlers.messages import *
+# isort: on

@@ -1,7 +1,7 @@
 """Extracted from the legacy bot module without behavior changes."""
 
 from aiogram.types import InlineQuery, InlineQueryResultArticle, InputTextMessageContent
-from guardbot.bot.runtime import dp, process_inventory_items_universal
+from guardbot.bot.runtime import dp, get_inventory_context_id, process_inventory_items_universal
 from guardbot.config import logger
 from guardbot.database import AccountGroup, AsyncSessionLocal, Mafile
 from guardbot.security import decrypt_value
@@ -10,6 +10,7 @@ from sqlalchemy import func, select, text
 import base64
 import hashlib
 import hmac
+from html import escape
 import math
 import struct
 import time
@@ -93,7 +94,7 @@ async def inline_handler(inline_query: InlineQuery):
                 ),
             ),
         ]
-        await inline_query.answer(help_results, cache_time=10)
+        await inline_query.answer(help_results, cache_time=0, is_personal=True)
         return
 
     # ========== ОПРЕДЕЛЯЕМ КОМАНДУ И АРГУМЕНТ ==========
@@ -152,7 +153,7 @@ async def inline_handler(inline_query: InlineQuery):
                 parse_mode="HTML"
             )
         )
-        await inline_query.answer([hint], cache_time=10)
+        await inline_query.answer([hint], cache_time=0, is_personal=True)
         return
 
     # ========== КОМАНДА БЕЗ АРГУМЕНТА — ПОКАЗЫВАЕМ ПОДСКАЗКУ ==========
@@ -201,7 +202,7 @@ async def inline_handler(inline_query: InlineQuery):
                 parse_mode="HTML"
             ),
         )
-        await inline_query.answer([hint_result], cache_time=10)
+        await inline_query.answer([hint_result], cache_time=0, is_personal=True)
         return
 
     # ========== КОМАНДА С АРГУМЕНТОМ — ВЫПОЛНЯЕМ ==========
@@ -262,7 +263,7 @@ async def inline_gc(inline_query: InlineQuery, user_id: int):
                 parse_mode="HTML"
             )
         )
-        await inline_query.answer([no_result], cache_time=1)
+        await inline_query.answer([no_result], cache_time=0, is_personal=True)
         return
 
     results = []
@@ -295,7 +296,7 @@ async def inline_gc(inline_query: InlineQuery, user_id: int):
 
         message_text = (
             f"🔐 <b>STEAM GUARD КОД</b>\n\n"
-            f"📱 <b>Аккаунт:</b> <code>{mafile.account_name}</code>\n"
+            f"📱 <b>Аккаунт:</b> <code>{escape(mafile.account_name)}</code>\n"
             f"🔑 <b>Код:</b> <code>{code}</code>\n\n"
             f"⏰ Обновится через <b>{remaining_seconds}с</b>"
         )
@@ -312,8 +313,7 @@ async def inline_gc(inline_query: InlineQuery, user_id: int):
             )
         )
 
-    cache_seconds = max(1, remaining_seconds - 3)
-    await inline_query.answer(results, cache_time=cache_seconds)
+    await inline_query.answer(results, cache_time=0, is_personal=True)
 
 async def inline_tradelink(inline_query: InlineQuery, user_id: int):
     """Инлайн: получение трейд-ссылок"""
@@ -326,6 +326,7 @@ async def inline_tradelink(inline_query: InlineQuery, user_id: int):
             query = query[len(prefix):].strip()
             break
 
+    single_client = None
     async with AsyncSessionLocal() as session:
         stmt = select(Mafile).where(
             Mafile.telegram_id == user_id,
@@ -347,6 +348,12 @@ async def inline_tradelink(inline_query: InlineQuery, user_id: int):
         groups_result = await session.execute(groups_stmt)
         groups = {g.id: g.name for g in groups_result.scalars().all()}
 
+        if len(mafiles) == 1:
+            single_client = await SteamSessionManager.create_steam_client_from_db(
+                mafiles[0],
+                session,
+            )
+
     if not mafiles:
         no_result = InlineQueryResultArticle(
             id="no_tl",
@@ -358,13 +365,14 @@ async def inline_tradelink(inline_query: InlineQuery, user_id: int):
                 parse_mode="HTML"
             )
         )
-        await inline_query.answer([no_result], cache_time=10)
+        await inline_query.answer([no_result], cache_time=0, is_personal=True)
         return
 
     # 🔥 Если найден ровно ОДИН аккаунт — сразу получаем трейд-ссылку
     if len(mafiles) == 1:
         mafile = mafiles[0]
-        client = await SteamSessionManager.create_steam_client_from_db(mafile, session)
+        client = single_client
+        assert client is not None
         try:
             tradelink = await client.get_tradelink()
         except:
@@ -377,12 +385,14 @@ async def inline_tradelink(inline_query: InlineQuery, user_id: int):
 
         if tradelink:
             message_text = (
-                f"🔗 <b>Трейд-ссылка аккаунта {mafile.account_name}</b> — {tradelink}"
+                f"🔗 <b>Трейд-ссылка аккаунта {escape(mafile.account_name)}</b> — "
+                f"{escape(str(tradelink))}"
             )
             description = tradelink[:60]
         else:
             message_text = (
-                f"⚠️ <b>Не удалось получить трейд-ссылку для {mafile.account_name}</b>\n"
+                f"⚠️ <b>Не удалось получить трейд-ссылку для "
+                f"{escape(mafile.account_name)}</b>\n"
                 f"Возможно, сессия устарела. Войдите заново."
             )
             description = "Сессия устарела"
@@ -396,7 +406,7 @@ async def inline_tradelink(inline_query: InlineQuery, user_id: int):
                 parse_mode="HTML"
             ),
         )
-        await inline_query.answer([single_result], cache_time=30)
+        await inline_query.answer([single_result], cache_time=0, is_personal=True)
         return
 
     # 🔥 Много аккаунтов — показываем список, ссылка получится при нажатии
@@ -423,13 +433,16 @@ async def inline_tradelink(inline_query: InlineQuery, user_id: int):
                 title=title,
                 description=description,
                 input_message_content=InputTextMessageContent(
-                    message_text=f"🔗 Загружаю трейд-ссылку для <b>{mafile.account_name}</b>...",
+                    message_text=(
+                        "🔗 Загружаю трейд-ссылку для "
+                        f"<b>{escape(mafile.account_name)}</b>..."
+                    ),
                     parse_mode="HTML"
                 ),
             )
         )
 
-    await inline_query.answer(results, cache_time=5)
+    await inline_query.answer(results, cache_time=0, is_personal=True)
 
 async def inline_steamid(inline_query: InlineQuery, user_id: int):
     """Инлайн: получение SteamID"""
@@ -460,7 +473,7 @@ async def inline_steamid(inline_query: InlineQuery, user_id: int):
                 parse_mode="HTML"
             )
         )
-        await inline_query.answer([no_result], cache_time=10)
+        await inline_query.answer([no_result], cache_time=0, is_personal=True)
         return
 
     results = []
@@ -479,7 +492,7 @@ async def inline_steamid(inline_query: InlineQuery, user_id: int):
         group_text = f" 📁{group_name}" if group_name else ""
 
         message_text = (
-            f"🆔 <b>Стим ID для аккаунта {mafile.account_name}</b>\n"
+            f"🆔 <b>Стим ID для аккаунта {escape(mafile.account_name)}</b>\n"
             f"├─ SteamID: <code>{steamid2}</code>\n"
             f"├─ SteamID64: <code>{steamid64}</code>\n"
             f"└─ <a href='https://steamcommunity.com/profiles/{steamid64}'>Профиль Steam</a>"
@@ -498,7 +511,7 @@ async def inline_steamid(inline_query: InlineQuery, user_id: int):
             )
         )
 
-    await inline_query.answer(results, cache_time=300)
+    await inline_query.answer(results, cache_time=0, is_personal=True)
 
 async def inline_showgroup(inline_query: InlineQuery, user_id: int):
     """Инлайн: просмотр групп"""
@@ -532,7 +545,7 @@ async def inline_showgroup(inline_query: InlineQuery, user_id: int):
                     parse_mode="HTML"
                 )
             )
-            await inline_query.answer([no_result], cache_time=10)
+            await inline_query.answer([no_result], cache_time=0, is_personal=True)
             return
 
         results = []
@@ -557,13 +570,16 @@ async def inline_showgroup(inline_query: InlineQuery, user_id: int):
                 pin = "📌" if mf.is_pinned else ""
                 guard = "🔐" if mf.shared_secret else "❌"
                 has_login = "✅" if (mf.access_token and mf.refresh_token) else "⚠️"
-                accounts_list += f"{idx}. {pin}{has_login}{guard} <code>{mf.account_name}</code>\n"
+                accounts_list += (
+                    f"{idx}. {pin}{has_login}{guard} "
+                    f"<code>{escape(mf.account_name)}</code>\n"
+                )
 
             if len(mafiles) > 20:
                 accounts_list += f"<i>... и еще {len(mafiles) - 20}</i>\n"
 
             message_text = (
-                f"📁 <b>Список аккаунтов из группы {grp.name}</b> ({count} акк.)\n\n"
+                f"📁 <b>Список аккаунтов из группы {escape(grp.name)}</b> ({count} акк.)\n\n"
                 f"{accounts_list}"
             )
 
@@ -579,8 +595,7 @@ async def inline_showgroup(inline_query: InlineQuery, user_id: int):
                 )
             )
 
-    # 🔥 Состав групп меняется редко — кэш 10 секунд
-    await inline_query.answer(results, cache_time=300)
+    await inline_query.answer(results, cache_time=0, is_personal=True)
 
 async def inline_steamlink(inline_query: InlineQuery, user_id: int):
     """Инлайн: получение ссылки на профиль Steam"""
@@ -626,7 +641,7 @@ async def inline_steamlink(inline_query: InlineQuery, user_id: int):
                 parse_mode="HTML"
             )
         )
-        await inline_query.answer([no_result], cache_time=10)
+        await inline_query.answer([no_result], cache_time=0, is_personal=True)
         return
 
     # 🔥 Если найден ровно ОДИН аккаунт — сразу показываем ссылку
@@ -639,7 +654,8 @@ async def inline_steamlink(inline_query: InlineQuery, user_id: int):
         group_text = f" 📁{group_name}" if group_name else ""
 
         message_text = (
-            f"🔗 <b>Ссылка на Steam профиль аккаунта {mafile.account_name}</b> — {profile_url}"
+            f"🔗 <b>Ссылка на Steam профиль аккаунта "
+            f"{escape(mafile.account_name)}</b> — {escape(str(profile_url))}"
         )
 
         single_result = InlineQueryResultArticle(
@@ -652,7 +668,7 @@ async def inline_steamlink(inline_query: InlineQuery, user_id: int):
                 disable_web_page_preview=False
             ),
         )
-        await inline_query.answer([single_result], cache_time=300)
+        await inline_query.answer([single_result], cache_time=0, is_personal=True)
         return
 
     # 🔥 Много аккаунтов — показываем список
@@ -678,14 +694,17 @@ async def inline_steamlink(inline_query: InlineQuery, user_id: int):
                 title=title,
                 description=description,
                 input_message_content=InputTextMessageContent(
-                    message_text=f"🔗 <b>Ссылка на Steam профиль аккаунта {mafile.account_name}</b> — {profile_url}",
+                    message_text=(
+                        "🔗 <b>Ссылка на Steam профиль аккаунта "
+                        f"{escape(mafile.account_name)}</b> — {escape(str(profile_url))}"
+                    ),
                     parse_mode="HTML",
                     disable_web_page_preview=True
                 ),
             )
         )
 
-    await inline_query.answer(results, cache_time=300)
+    await inline_query.answer(results, cache_time=0, is_personal=True)
 
 async def inline_inv(inline_query: InlineQuery, user_id: int):
     """Инлайн: просмотр инвентаря"""
@@ -718,10 +737,11 @@ async def inline_inv(inline_query: InlineQuery, user_id: int):
         else:
             account_query = ' '.join(parts)
 
-    context_id = 2 if app_id != 753 else 6
+    context_id = get_inventory_context_id(app_id)
     game_names = {730: "CS2", 440: "TF2", 570: "Dota 2", 753: "Steam"}
     game_name = game_names.get(app_id, "CS2")
 
+    single_client = None
     async with AsyncSessionLocal() as session:
         stmt = select(Mafile).where(
             Mafile.telegram_id == user_id,
@@ -737,6 +757,12 @@ async def inline_inv(inline_query: InlineQuery, user_id: int):
         groups_result = await session.execute(groups_stmt)
         groups = {g.id: g.name for g in groups_result.scalars().all()}
 
+        if len(mafiles) == 1 and mafiles[0].access_token:
+            single_client = await SteamSessionManager.create_steam_client_from_db(
+                mafiles[0],
+                session,
+            )
+
     if not mafiles:
         await inline_query.answer([InlineQueryResultArticle(
             id="no_inv",
@@ -746,7 +772,7 @@ async def inline_inv(inline_query: InlineQuery, user_id: int):
                 message_text=f"❌ Нет аккаунтов с привязанным SteamID\n\nФормат: @steamguardmanager_bot inv [cs/tf/dota/steam] логин",
                 parse_mode="HTML"
             )
-        )], cache_time=10)
+        )], cache_time=0, is_personal=True)
         return
 
     if len(mafiles) != 1:
@@ -765,7 +791,7 @@ async def inline_inv(inline_query: InlineQuery, user_id: int):
                     parse_mode="HTML"
                 )
             ))
-        await inline_query.answer(results, cache_time=5)
+        await inline_query.answer(results, cache_time=0, is_personal=True)
         return
 
     mafile = mafiles[0]
@@ -776,13 +802,17 @@ async def inline_inv(inline_query: InlineQuery, user_id: int):
             title=f"⚠️ Требуется вход в аккаунт {mafile.account_name}",
             description="Сессия не активна, выполните /login",
             input_message_content=InputTextMessageContent(
-                message_text=f"⚠️ Для просмотра инвентаря <b>{mafile.account_name}</b> требуется вход.",
+                message_text=(
+                    "⚠️ Для просмотра инвентаря "
+                    f"<b>{escape(mafile.account_name)}</b> требуется вход."
+                ),
                 parse_mode="HTML"
             )
-        )], cache_time=10)
+        )], cache_time=0, is_personal=True)
         return
 
-    client = await SteamSessionManager.create_steam_client_from_db(mafile, session)
+    client = single_client
+    assert client is not None
     try:
         data = await client.get_inventory(app_id, context_id)
 
@@ -792,10 +822,13 @@ async def inline_inv(inline_query: InlineQuery, user_id: int):
                 title=f"❌ Не удалось загрузить инвентарь",
                 description="Профиль скрыт или сессия устарела",
                 input_message_content=InputTextMessageContent(
-                    message_text=f"❌ Не удалось загрузить инвентарь для <b>{mafile.account_name}</b>",
+                    message_text=(
+                        "❌ Не удалось загрузить инвентарь для "
+                        f"<b>{escape(mafile.account_name)}</b>"
+                    ),
                     parse_mode="HTML"
                 )
-            )], cache_time=10)
+            )], cache_time=0, is_personal=True)
             return
 
         items = process_inventory_items_universal(data, app_id)
@@ -826,10 +859,13 @@ async def inline_inv(inline_query: InlineQuery, user_id: int):
                 title=f"🎒 Инвентарь {game_name}: {mafile.account_name}",
                 description="Инвентарь пуст",
                 input_message_content=InputTextMessageContent(
-                    message_text=f"🎒 Инвентарь {game_name} — {mafile.account_name}\n📭 Инвентарь пуст",
+                    message_text=(
+                        f"🎒 Инвентарь {game_name} — "
+                        f"{escape(mafile.account_name)}\n📭 Инвентарь пуст"
+                    ),
                     parse_mode="HTML"
                 )
-            )], cache_time=10)
+            )], cache_time=0, is_personal=True)
             return
 
         # Разбиваем на страницы по 20 предметов
@@ -844,9 +880,17 @@ async def inline_inv(inline_query: InlineQuery, user_id: int):
             page_items = items[start:end]
 
             if total_pages == 1:
-                header = f"🎒 <b>Инвентарь {game_name}</b> — <b>{mafile.account_name}</b>\n📦 {total_count} предметов\n"
+                header = (
+                    f"🎒 <b>Инвентарь {game_name}</b> — "
+                    f"<b>{escape(mafile.account_name)}</b>\n"
+                    f"📦 {total_count} предметов\n"
+                )
             else:
-                header = f"🎒 <b>Инвентарь {game_name}</b> — <b>{mafile.account_name}</b>\n📦 {total_count} предметов | Стр. {page+1}/{total_pages}\n\n"
+                header = (
+                    f"🎒 <b>Инвентарь {game_name}</b> — "
+                    f"<b>{escape(mafile.account_name)}</b>\n"
+                    f"📦 {total_count} предметов | Стр. {page+1}/{total_pages}\n\n"
+                )
 
             lines = []
 
@@ -855,7 +899,10 @@ async def inline_inv(inline_query: InlineQuery, user_id: int):
                 name = item.get('name', 'Unknown')
                 amount = f" x{item['amount']}" if item.get('amount', 1) > 1 else ""
 
-                line = f"{idx}. {rarity_emoji} <b>{name}</b>{amount}"
+                line = (
+                    f"{idx}. {escape(str(rarity_emoji))} "
+                    f"<b>{escape(str(name))}</b>{escape(str(amount))}"
+                )
 
                 info_parts = []
 
@@ -885,13 +932,15 @@ async def inline_inv(inline_query: InlineQuery, user_id: int):
                     info_parts.append(item['quality'])
 
                 if info_parts:
-                    line += f"\n   {' | '.join(info_parts)}"
+                    line += f"\n   {escape(' | '.join(map(str, info_parts)))}"
 
                 stickers = item.get('stickers', [])
                 if stickers:
                     for s in stickers:
                         w = f" ({math.ceil(s['wear']*100)}%)" if s.get('wear') and s['wear'] > 0 else ""
-                        line += f"\n   🏷️ {s['name']}{w}"
+                        line += (
+                            f"\n   🏷️ {escape(str(s['name']))}{escape(str(w))}"
+                        )
 
                 lines.append(line)
 
@@ -914,7 +963,7 @@ async def inline_inv(inline_query: InlineQuery, user_id: int):
                 )
             ))
 
-        await inline_query.answer(results, cache_time=10)
+        await inline_query.answer(results, cache_time=0, is_personal=True)
 
     except Exception as e:
         logger.error(f"INV error: {e}")
@@ -923,9 +972,9 @@ async def inline_inv(inline_query: InlineQuery, user_id: int):
             title=f"❌ Ошибка: {str(e)[:60]}",
             description="Попробуйте позже",
             input_message_content=InputTextMessageContent(
-                message_text=f"❌ Ошибка: {str(e)[:200]}",
+                message_text=f"❌ Ошибка: {escape(str(e)[:200])}",
                 parse_mode="HTML"
             )
-        )], cache_time=10)
+        )], cache_time=0, is_personal=True)
     finally:
         await client.close()

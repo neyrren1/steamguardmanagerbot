@@ -1,12 +1,31 @@
 """Extracted from the legacy bot module without behavior changes."""
 
+from contextlib import suppress
+from html import escape
+
 from aiogram import F
+from aiogram.enums import ChatType
+from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import Command, CommandObject
+from aiogram.fsm.context import FSMContext
 from aiogram.types import BufferedInputFile, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
-from datetime import datetime
+from datetime import UTC, datetime
+from guardbot.bot.callback_validation import validated_callback_data
 from guardbot.bot.handlers.accounts import callback_account_detail, callback_account_settings
 from guardbot.bot.handlers.common import cmd_start_help
-from guardbot.bot.runtime import check_proxy_available, dp, start_trade_check_task, stop_trade_check_task, user_states
+from guardbot.bot.runtime import (
+    callback_feedback,
+    check_proxy_available,
+    clear_legacy_user_state,
+    clear_user_workflows,
+    delete_secret_message_or_abort,
+    dp,
+    set_legacy_user_state,
+    start_trade_check_task,
+    stop_trade_check_task,
+    user_states,
+)
+from guardbot.bot.states import BotPasswordFlow, TradeNotificationFlow, UnlockFlow
 from guardbot.config import logger
 from guardbot.database import AsyncSessionLocal, Mafile, User
 from guardbot.passwords import (
@@ -36,10 +55,21 @@ def _features():
 # ==================== КОМАНДА: ИНВЕНТАРЬ ====================
 @dp.message(Command("inventory"))
 @dp.message(Command("inv"))
-async def cmd_inventory(message: Message, command: CommandObject):
+async def cmd_inventory(
+    message: Message,
+    command: CommandObject,
+    state: FSMContext,
+):
     """Открыть меню инвентаря аккаунта"""
     args = command.args.split() if command.args else []
     telegram_id = message.from_user.id
+    await clear_user_workflows(telegram_id, state)
+
+    if message.chat.type != ChatType.PRIVATE:
+        await message.answer(
+            "❌ Инвентарь доступен только в личном чате с ботом."
+        )
+        return
 
     async with AsyncSessionLocal() as session:
         stmt = select(Mafile).where(Mafile.telegram_id == telegram_id)
@@ -78,7 +108,10 @@ async def cmd_inventory(message: Message, command: CommandObject):
             mafile = next((mf for mf in mafiles if mf.account_name.lower() == account_input.lower()), None)
 
         if not mafile:
-            await message.answer(f"❌ Аккаунт <b>{account_input}</b> не найден", parse_mode="HTML")
+            await message.answer(
+                f"❌ Аккаунт <b>{escape(account_input)}</b> не найден",
+                parse_mode="HTML",
+            )
             return
 
         if not mafile.steamid:
@@ -101,7 +134,7 @@ async def cmd_inventory(message: Message, command: CommandObject):
             data=f"inventory_menu_{mafile.id}"
         )
 
-        await _features().callback_inventory_menu(fake_callback)
+        await _features().callback_inventory_menu(fake_callback, state)
 # ==================== КОМАНДА: ПОДТВЕРЖДЕНИЯ ====================
 @dp.message(Command("confirmations"))
 @dp.message(Command("conf"))
@@ -153,14 +186,17 @@ async def cmd_confirmations(message: Message, command: CommandObject):
             mafile = next((mf for mf in mafiles if mf.account_name.lower() == account_input.lower()), None)
 
         if not mafile:
-            await message.answer(f"❌ Аккаунт <b>{account_input}</b> не найден", parse_mode="HTML")
+            await message.answer(
+                f"❌ Аккаунт <b>{escape(account_input)}</b> не найден",
+                parse_mode="HTML",
+            )
             return
 
         if not mafile.access_token:
             await message.answer(
                 f"❌ <b>Нет активной сессии!</b>\n\n"
                 f"Сначала войдите в аккаунт:\n"
-                f"<code>/login {mafile.account_name}</code>",
+                f"<code>/login {escape(str(mafile.account_name))}</code>",
                 parse_mode="HTML"
             )
             return
@@ -231,14 +267,17 @@ async def cmd_confirmall(message: Message, command: CommandObject):
             mafile = next((mf for mf in mafiles if mf.account_name.lower() == account_input.lower()), None)
 
         if not mafile:
-            await message.answer(f"❌ Аккаунт <b>{account_input}</b> не найден", parse_mode="HTML")
+            await message.answer(
+                f"❌ Аккаунт <b>{escape(account_input)}</b> не найден",
+                parse_mode="HTML",
+            )
             return
 
         if not mafile.access_token:
             await message.answer(
                 f"❌ <b>Нет активной сессии!</b>\n\n"
                 f"Сначала войдите в аккаунт:\n"
-                f"<code>/login {mafile.account_name}</code>",
+                f"<code>/login {escape(str(mafile.account_name))}</code>",
                 parse_mode="HTML"
             )
             return
@@ -306,14 +345,17 @@ async def cmd_trades(message: Message, command: CommandObject):
             mafile = next((mf for mf in mafiles if mf.account_name.lower() == account_input.lower()), None)
 
         if not mafile:
-            await message.answer(f"❌ Аккаунт <b>{account_input}</b> не найден", parse_mode="HTML")
+            await message.answer(
+                f"❌ Аккаунт <b>{escape(account_input)}</b> не найден",
+                parse_mode="HTML",
+            )
             return
 
         if not mafile.access_token:
             await message.answer(
                 f"❌ <b>Нет активной сессии!</b>\n\n"
                 f"Сначала войдите в аккаунт:\n"
-                f"<code>/login {mafile.account_name}</code>",
+                f"<code>/login {escape(str(mafile.account_name))}</code>",
                 parse_mode="HTML"
             )
             return
@@ -390,7 +432,10 @@ async def cmd_account_settings_cmd(message: Message, command: CommandObject):
             mafile = next((mf for mf in mafiles if mf.account_name.lower() == account_input.lower()), None)
 
         if not mafile:
-            await message.answer(f"❌ Аккаунт <b>{account_input}</b> не найден", parse_mode="HTML")
+            await message.answer(
+                f"❌ Аккаунт <b>{escape(account_input)}</b> не найден",
+                parse_mode="HTML",
+            )
             return
 
         msg = await message.answer("...", parse_mode="HTML")
@@ -456,7 +501,10 @@ async def cmd_account_detail(message: Message, command: CommandObject):
             mafile = next((mf for mf in mafiles if mf.account_name.lower() == account_input.lower()), None)
 
         if not mafile:
-            await message.answer(f"❌ Аккаунт <b>{account_input}</b> не найден", parse_mode="HTML")
+            await message.answer(
+                f"❌ Аккаунт <b>{escape(account_input)}</b> не найден",
+                parse_mode="HTML",
+            )
             return
 
         msg = await message.answer("...", parse_mode="HTML")
@@ -481,6 +529,14 @@ async def cmd_account_detail(message: Message, command: CommandObject):
 @dp.message(Command("note"))
 async def cmd_note(message: Message, command: CommandObject):
     """Добавить/посмотреть/удалить заметку к аккаунту"""
+    if not await delete_secret_message_or_abort(message):
+        return
+    if message.chat.type != ChatType.PRIVATE:
+        await message.answer(
+            "❌ Заметки можно использовать только в личном чате с ботом."
+        )
+        return
+
     args = command.args.split() if command.args else []
     telegram_id = message.from_user.id
 
@@ -514,30 +570,27 @@ async def cmd_note(message: Message, command: CommandObject):
             mafile = next((mf for mf in mafiles if mf.account_name.lower() == account_input.lower()), None)
 
         if not mafile:
-            await message.answer(f"❌ Аккаунт <b>{account_input}</b> не найден", parse_mode="HTML")
+            await message.answer(
+                f"❌ Аккаунт <b>{escape(account_input)}</b> не найден",
+                parse_mode="HTML",
+            )
             return
 
         if len(args) == 1:
-
-            # 🔥 Удаляем команду с текстом заметки
-            try:
-                await message.delete()
-            except:
-                pass
 
             # Показать заметку
             current_note = decrypt_value(mafile.notes) if mafile.notes else None
             if current_note:
                 await message.answer(
-                    f"📝 <b>Заметка для {mafile.account_name}:</b>\n"
-                    f"<i>{current_note}</i>\n\n"
-                    f"<code>/note {account_input} .</code> — удалить",
+                    f"📝 <b>Заметка для {escape(str(mafile.account_name))}:</b>\n"
+                    f"<i>{escape(str(current_note))}</i>\n\n"
+                    f"<code>/note {escape(str(account_input))} .</code> — удалить",
                     parse_mode="HTML"
                 )
             else:
                 await message.answer(
-                    f"📝 <b>{mafile.account_name}</b> — заметок нет\n"
-                    f"<code>/note {account_input} текст</code> — добавить",
+                    f"📝 <b>{escape(str(mafile.account_name))}</b> — заметок нет\n"
+                    f"<code>/note {escape(str(account_input))} текст</code> — добавить",
                     parse_mode="HTML"
                 )
             return
@@ -548,15 +601,15 @@ async def cmd_note(message: Message, command: CommandObject):
         if note_text == '.':
             mafile.notes = None
             await session.commit()
-            await message.answer(f"✅ Заметка для <b>{mafile.account_name}</b> удалена", parse_mode="HTML")
+            await message.answer(f"✅ Заметка для <b>{escape(str(mafile.account_name))}</b> удалена", parse_mode="HTML")
         else:
             if len(note_text) > 500:
                 note_text = note_text[:500]
             mafile.notes = encrypt_value(note_text)
             await session.commit()
             await message.answer(
-                f"✅ Заметка для <b>{mafile.account_name}</b> сохранена:\n"
-                f"<i>{note_text}</i>",
+                f"✅ Заметка для <b>{escape(str(mafile.account_name))}</b> сохранена:\n"
+                f"<i>{escape(str(note_text))}</i>",
                 parse_mode="HTML"
             )
 
@@ -596,14 +649,17 @@ async def cmd_proxy_info(message: Message, command: CommandObject):
             mafile = next((mf for mf in mafiles if mf.account_name.lower() == account_input.lower()), None)
 
         if not mafile:
-            await message.answer(f"❌ Аккаунт <b>{account_input}</b> не найден", parse_mode="HTML")
+            await message.answer(
+                f"❌ Аккаунт <b>{escape(account_input)}</b> не найден",
+                parse_mode="HTML",
+            )
             return
 
         if mafile.unique_proxy and mafile.proxy:
             decrypted = decrypt_value(mafile.proxy)
             await message.answer(
-                f"🌐 <b>Прокси для {mafile.account_name}:</b>\n"
-                f"🔒 Уникальный:\n<code>{redact_proxy_url(decrypted)}</code>",
+                f"🌐 <b>Прокси для {escape(str(mafile.account_name))}:</b>\n"
+                f"🔒 Уникальный:\n<code>{escape(str(redact_proxy_url(decrypted)))}</code>",
                 parse_mode="HTML"
             )
         else:
@@ -614,15 +670,15 @@ async def cmd_proxy_info(message: Message, command: CommandObject):
             if user and user.general_proxy:
                 decrypted = decrypt_value(user.general_proxy)
                 await message.answer(
-                    f"🌐 <b>Прокси для {mafile.account_name}:</b>\n"
-                    f"🌍 Общий:\n<code>{redact_proxy_url(decrypted)}</code>",
+                    f"🌐 <b>Прокси для {escape(str(mafile.account_name))}:</b>\n"
+                    f"🌍 Общий:\n<code>{escape(str(redact_proxy_url(decrypted)))}</code>",
                     parse_mode="HTML"
                 )
             else:
                 await message.answer(
-                    f"❌ <b>Прокси для {mafile.account_name} не настроен</b>\n\n"
+                    f"❌ <b>Прокси для {escape(str(mafile.account_name))} не настроен</b>\n\n"
                     f"<code>/set_proxy [url]</code> — общий прокси\n"
-                    f"<code>/set_account_proxy {mafile.account_name} [url]</code> — уникальный",
+                    f"<code>/set_account_proxy {escape(str(mafile.account_name))} [url]</code> — уникальный",
                     parse_mode="HTML"
                 )
 
@@ -661,13 +717,16 @@ async def cmd_steamid(message: Message, command: CommandObject):
             mafile = next((mf for mf in mafiles if mf.account_name.lower() == account_input.lower()), None)
 
         if not mafile:
-            await message.answer(f"❌ Аккаунт <b>{account_input}</b> не найден", parse_mode="HTML")
+            await message.answer(
+                f"❌ Аккаунт <b>{escape(account_input)}</b> не найден",
+                parse_mode="HTML",
+            )
             return
 
         if not mafile.steamid:
             await message.answer(
-                f"❌ <b>{mafile.account_name}</b> — SteamID не привязан\n"
-                f"Сначала войдите в аккаунт: <code>/login {mafile.account_name}</code>",
+                f"❌ <b>{escape(str(mafile.account_name))}</b> — SteamID не привязан\n"
+                f"Сначала войдите в аккаунт: <code>/login {escape(str(mafile.account_name))}</code>",
                 parse_mode="HTML"
             )
             return
@@ -687,11 +746,11 @@ async def cmd_steamid(message: Message, command: CommandObject):
             steamid3 = "N/A"
 
         await message.answer(
-            f"🆔 <b>{mafile.account_name}</b>\n\n"
+            f"🆔 <b>{escape(str(mafile.account_name))}</b>\n\n"
             f"├─ SteamID: <code>{steamid2}</code>\n"
             f"├─ SteamID3: <code>{steamid3}</code>\n"
             f"├─ SteamID64: <code>{steamid64}</code>\n"
-            f"└─ <a href='{profile_url}'>Профиль Steam</a>",
+            f"└─ <a href='{escape(str(profile_url))}'>Профиль Steam</a>",
             parse_mode="HTML",
             disable_web_page_preview=True
         )
@@ -732,14 +791,17 @@ async def cmd_tradelink(message: Message, command: CommandObject):
             mafile = next((mf for mf in mafiles if mf.account_name.lower() == account_input.lower()), None)
 
         if not mafile:
-            await message.answer(f"❌ Аккаунт <b>{account_input}</b> не найден", parse_mode="HTML")
+            await message.answer(
+                f"❌ Аккаунт <b>{escape(account_input)}</b> не найден",
+                parse_mode="HTML",
+            )
             return
 
         if not mafile.access_token:
             await message.answer(
                 f"❌ <b>Нет активной сессии!</b>\n\n"
                 f"Сначала войдите в аккаунт:\n"
-                f"<code>/login {mafile.account_name}</code>",
+                f"<code>/login {escape(str(mafile.account_name))}</code>",
                 parse_mode="HTML"
             )
             return
@@ -753,8 +815,8 @@ async def cmd_tradelink(message: Message, command: CommandObject):
 
             if tradelink:
                 await status_msg.edit_text(
-                    f"🔗 <b>Трейд-ссылка для {mafile.account_name}:</b>\n\n"
-                    f"<code>{tradelink}</code>",
+                    f"🔗 <b>Трейд-ссылка для {escape(str(mafile.account_name))}:</b>\n\n"
+                    f"<code>{escape(str(tradelink))}</code>",
                     parse_mode="HTML"
                 )
             else:
@@ -764,11 +826,14 @@ async def cmd_tradelink(message: Message, command: CommandObject):
                     f"• Сессия устарела\n"
                     f"• Аккаунт ограничен\n"
                     f"• Не настроен обмен\n\n"
-                    f"Попробуйте войти заново: <code>/login {mafile.account_name}</code>",
+                    f"Попробуйте войти заново: <code>/login {escape(str(mafile.account_name))}</code>",
                     parse_mode="HTML"
                 )
         except Exception as e:
-            await status_msg.edit_text(f"❌ Ошибка: {str(e)[:200]}", parse_mode="HTML")
+            await status_msg.edit_text(
+                f"❌ Ошибка: {escape(str(e)[:200])}",
+                parse_mode="HTML",
+            )
         finally:
             await client.close()
 
@@ -815,7 +880,7 @@ async def cmd_login_all(message: Message):
                 f"✅ Успешно: {len(success)}\n"
                 f"⚠️ Требуют код: {len(need_code)}\n"
                 f"❌ Ошибки: {len(errors)}\n\n"
-                f"<i>Текущий: {mafile.account_name}...</i>",
+                f"<i>Текущий: {escape(str(mafile.account_name))}...</i>",
                 parse_mode="HTML"
             )
 
@@ -890,29 +955,41 @@ async def cmd_login_all(message: Message):
         if success:
             result_text += f"✅ <b>Успешно ({len(success)}):</b>\n"
             for name in success:
-                result_text += f"  • {name}\n"
+                result_text += f"  • {escape(str(name))}\n"
             result_text += "\n"
 
         if need_code:
             result_text += f"⚠️ <b>Требуют код ({len(need_code)}):</b>\n"
             for name in need_code:
-                result_text += f"  • {name} — <code>/login {name}</code>\n"
+                escaped_name = escape(str(name))
+                result_text += f"  • {escaped_name} — <code>/login {escaped_name}</code>\n"
             result_text += "\n"
 
         if errors:
             result_text += f"❌ <b>Ошибки ({len(errors)}):</b>\n"
             for err in errors:
-                result_text += f"  • {err}\n"
+                result_text += f"  • {escape(str(err))}\n"
 
         await status_msg.edit_text(result_text, parse_mode="HTML")
 
 
 # ==================== КОМАНДА: ВКЛЮЧИТЬ УВЕДОМЛЕНИЯ ====================
 @dp.message(Command("notify_on"))
-async def cmd_notify_on(message: Message, command: CommandObject):
+async def cmd_notify_on(
+    message: Message,
+    command: CommandObject,
+    state: FSMContext,
+):
     """Включить уведомления о трейдах"""
     args = command.args.split() if command.args else []
     telegram_id = message.from_user.id
+    await clear_user_workflows(telegram_id, state)
+
+    if message.chat.type != ChatType.PRIVATE:
+        await message.answer(
+            "❌ Настраивать уведомления можно только в личном чате с ботом."
+        )
+        return
 
     async with AsyncSessionLocal() as session:
         stmt = select(Mafile).where(Mafile.telegram_id == telegram_id)
@@ -942,14 +1019,17 @@ async def cmd_notify_on(message: Message, command: CommandObject):
             mafile = next((mf for mf in mafiles if mf.account_name.lower() == account_input.lower()), None)
 
         if not mafile:
-            await message.answer(f"❌ Аккаунт <b>{account_input}</b> не найден", parse_mode="HTML")
+            await message.answer(
+                f"❌ Аккаунт <b>{escape(account_input)}</b> не найден",
+                parse_mode="HTML",
+            )
             return
 
         if len(args) >= 2:
             try:
                 interval = int(args[1])
-                if interval < 1:
-                    await message.answer("❌ Интервал должен быть не менее 1 минуты")
+                if not 1 <= interval <= 60:
+                    await message.answer("❌ Интервал должен быть от 1 до 60 минут")
                     return
 
                 mafile.trade_notifications = True
@@ -961,26 +1041,25 @@ async def cmd_notify_on(message: Message, command: CommandObject):
 
                 await message.answer(
                     f"✅ <b>Уведомления включены!</b>\n\n"
-                    f"📱 Аккаунт: <code>{mafile.account_name}</code>\n"
+                    f"📱 Аккаунт: <code>{escape(mafile.account_name)}</code>\n"
                     f"⏱ Интервал: каждые {interval} мин",
                     parse_mode="HTML"
                 )
             except ValueError:
                 await message.answer("❌ Интервал должен быть числом")
         else:
-            # Запрашиваем интервал
-            user_states[telegram_id] = {
-                "state": "waiting_trade_notify_interval",
-                "mafile_id": mafile.id,
-                "account_name": mafile.account_name
-            }
-
-            await message.answer(
-                f"⏱ <b>Введите интервал проверки в минутах:</b>\n\n"
-                f"Аккаунт: <code>{mafile.account_name}</code>\n\n"
-                f"Отправьте число (1-60):",
-                parse_mode="HTML"
-            )
+            try:
+                await state.set_state(TradeNotificationFlow.waiting_interval)
+                await state.set_data({"mafile_id": mafile.id, "is_update": False})
+                await message.answer(
+                    "⏱ <b>Введите интервал проверки в минутах:</b>\n\n"
+                    f"Аккаунт: <code>{escape(mafile.account_name)}</code>\n\n"
+                    "Отправьте число (1-60):",
+                    parse_mode="HTML",
+                )
+            except (Exception, asyncio.CancelledError):
+                await clear_user_workflows(telegram_id, state)
+                raise
 
 
 # ==================== КОМАНДА: ВЫКЛЮЧИТЬ УВЕДОМЛЕНИЯ ====================
@@ -1017,7 +1096,10 @@ async def cmd_notify_off(message: Message, command: CommandObject):
             mafile = next((mf for mf in mafiles if mf.account_name.lower() == account_input.lower()), None)
 
         if not mafile:
-            await message.answer(f"❌ Аккаунт <b>{account_input}</b> не найден", parse_mode="HTML")
+            await message.answer(
+                f"❌ Аккаунт <b>{escape(account_input)}</b> не найден",
+                parse_mode="HTML",
+            )
             return
 
         mafile.trade_notifications = False
@@ -1027,7 +1109,7 @@ async def cmd_notify_off(message: Message, command: CommandObject):
 
         await message.answer(
             f"✅ <b>Уведомления выключены!</b>\n\n"
-            f"📱 Аккаунт: <code>{mafile.account_name}</code>",
+            f"📱 Аккаунт: <code>{escape(str(mafile.account_name))}</code>",
             parse_mode="HTML"
         )
 
@@ -1035,6 +1117,12 @@ async def cmd_notify_off(message: Message, command: CommandObject):
 @dp.message(Command("export"))
 async def cmd_export_mafile(message: Message, command: CommandObject):
     """Экспорт mafile для одного аккаунта"""
+    if message.chat.type != ChatType.PRIVATE:
+        await message.answer(
+            "❌ Экспорт доступен только в личном чате с ботом."
+        )
+        return
+
     args = command.args.split() if command.args else []
     telegram_id = message.from_user.id
 
@@ -1075,7 +1163,10 @@ async def cmd_export_mafile(message: Message, command: CommandObject):
             mafile = next((mf for mf in mafiles if mf.account_name.lower() == account_input.lower()), None)
 
         if not mafile:
-            await message.answer(f"❌ Аккаунт <b>{account_input}</b> не найден", parse_mode="HTML")
+            await message.answer(
+                f"❌ Аккаунт <b>{escape(account_input)}</b> не найден",
+                parse_mode="HTML",
+            )
             return
 
         await send_mafile(message, mafile)
@@ -1085,6 +1176,12 @@ async def cmd_export_mafile(message: Message, command: CommandObject):
 @dp.message(Command("export_all"))
 async def cmd_export_all(message: Message):
     """Экспорт всех аккаунтов в ZIP архив"""
+    if message.chat.type != ChatType.PRIVATE:
+        await message.answer(
+            "❌ Экспорт доступен только в личном чате с ботом."
+        )
+        return
+
     telegram_id = message.from_user.id
 
     async with AsyncSessionLocal() as session:
@@ -1125,7 +1222,7 @@ async def cmd_export_all(message: Message):
             await status_msg.edit_text(
                 f"📤 <b>Экспорт {len(mafiles)} аккаунтов</b>\n\n"
                 f"Файлы в архиве:\n" +
-                "\n".join([f"• {mf.account_name}.mafile" for mf in mafiles]),
+                "\n".join([f"• {escape(str(mf.account_name))}.mafile" for mf in mafiles]),
                 parse_mode="HTML"
             )
 
@@ -1139,13 +1236,14 @@ async def cmd_export_all(message: Message):
 
         except Exception as e:
             await status_msg.edit_text(
-                f"❌ Ошибка при создании архива: {str(e)[:200]}",
+                f"❌ Ошибка при создании архива: {escape(str(e)[:200])}",
                 parse_mode="HTML"
             )
 
 
 # ==================== CALLBACK: ЭКСПОРТ MAFILE ====================
 @dp.callback_query(F.data.startswith("export_mafile_"))
+@validated_callback_data(r"export_mafile_(?P<db_id>[1-9][0-9]{0,9})")
 async def callback_export_mafile(callback: CallbackQuery):
     """Экспорт mafile через кнопку"""
     mafile_id = int(callback.data.split("_")[2])
@@ -1153,11 +1251,11 @@ async def callback_export_mafile(callback: CallbackQuery):
     async with AsyncSessionLocal() as session:
         mafile = await get_owned_mafile(session, mafile_id, callback.from_user.id)
         if not mafile:
-            await callback.answer("Аккаунт не найден", show_alert=True)
+            await callback_feedback(callback, "Аккаунт не найден", show_alert=True)
             return
 
         await send_mafile(callback.message, mafile)
-        await callback.answer("✅ Файл отправлен!")
+        await callback_feedback(callback, "✅ Файл отправлен!")
 
 
 # ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
@@ -1240,11 +1338,17 @@ def build_mafile_dict(mafile: Mafile) -> Optional[Dict]:
 
 async def send_mafile(message: Message, mafile: Mafile):
     """Отправляет mafile файл пользователю"""
+    if message.chat.type != ChatType.PRIVATE:
+        await message.answer(
+            "❌ Экспорт доступен только в личном чате с ботом."
+        )
+        return
+
     mafile_data = build_mafile_dict(mafile)
 
     if not mafile_data:
         await message.answer(
-            f"❌ <b>Не удалось создать mafile для {mafile.account_name}</b>",
+            f"❌ <b>Не удалось создать mafile для {escape(str(mafile.account_name))}</b>",
             parse_mode="HTML"
         )
         return
@@ -1259,7 +1363,7 @@ async def send_mafile(message: Message, mafile: Mafile):
     has_session = "✅" if 'Session' in mafile_data else "❌"
 
     caption = (
-        f"📤 <b>Экспорт {mafile.account_name}</b>\n"
+        f"📤 <b>Экспорт {escape(str(mafile.account_name))}</b>\n"
         f"🔐 2FA: {has_2fa}\n"
         f"🔑 Сессия: {has_session}\n"
         f"🆔 SteamID: {mafile.steamid or 'Нет'}"
@@ -1276,72 +1380,177 @@ async def send_mafile(message: Message, mafile: Mafile):
 
 
 # ==================== КОМАНДА: УСТАНОВИТЬ ПАРОЛЬ ====================
+async def _reject_password_outside_private_chat(message: Message) -> bool:
+    """Keep bot-local passwords out of group and channel history."""
+    if message.chat.type == ChatType.PRIVATE:
+        return False
+
+    with suppress(TelegramAPIError):
+        await message.delete()
+    await message.answer(
+        "❌ Пароли можно вводить только в личном чате с ботом."
+    )
+    return True
+
+
 @dp.message(Command("set_password"))
-async def cmd_set_password(message: Message, command: CommandObject):
+async def cmd_set_password(
+    message: Message,
+    command: CommandObject,
+    state: FSMContext,
+):
     """Установить пароль для блокировки бота"""
-    args = command.args.split() if command.args else []
-    telegram_id = message.from_user.id
-
-    if not args:
-        user_states[telegram_id] = {
-            "state": "waiting_bot_password",
-            "action": "set"
-        }
-
-        await message.answer(
-            "🔑 <b>УСТАНОВКА ПАРОЛЯ</b>\n\n"
-            "Отправьте пароль для блокировки бота.\n"
-            f"<i>Минимум {MIN_BOT_PASSWORD_LENGTH} символов.</i>\n\n"
-            "Или используйте:\n"
-            "<code>/set_password [пароль]</code>",
-            parse_mode="HTML"
-        )
+    if await _reject_password_outside_private_chat(message):
+        return
+    if message.from_user is None:
         return
 
-    password = args[0]
+    telegram_id = message.from_user.id
+    password = command.args
+    if not password:
+        await clear_user_workflows(telegram_id, state)
+        try:
+            await state.set_state(BotPasswordFlow.waiting_password)
+            await state.set_data({"action": "set"})
+            await message.answer(
+                "🔑 <b>УСТАНОВКА ПАРОЛЯ</b>\n\n"
+                "Отправьте пароль для блокировки бота.\n"
+                f"<i>Минимум {MIN_BOT_PASSWORD_LENGTH} символов.</i>\n\n"
+                "Или используйте:\n"
+                "<code>/set_password [пароль]</code>",
+                parse_mode="HTML"
+            )
+        except (Exception, asyncio.CancelledError):
+            await clear_user_workflows(telegram_id, state)
+            raise
+        return
 
-    if len(password) < MIN_BOT_PASSWORD_LENGTH:
+    if not await delete_secret_message_or_abort(message):
+        return
+    await clear_user_workflows(telegram_id, state)
+    await _process_bot_password(message, state, password.strip(), "set")
+
+
+async def _process_bot_password(
+    message: Message,
+    state: FSMContext,
+    password: str,
+    action: str,
+) -> None:
+    """Apply one validated bot-password action without storing its secret."""
+    if message.from_user is None:
+        await state.clear()
+        return
+    telegram_id = message.from_user.id
+    if action not in {"set", "change", "remove"}:
+        await clear_user_workflows(telegram_id, state)
+        await message.answer("❌ Некорректное действие")
+        return
+
+    if action != "remove" and len(password) < MIN_BOT_PASSWORD_LENGTH:
         await message.answer(
             f"❌ Пароль должен быть не менее {MIN_BOT_PASSWORD_LENGTH} символов"
         )
         return
 
-    try:
-        await message.delete()
-    except:
-        pass
-
     async with AsyncSessionLocal() as session:
-        stmt = select(User).where(User.telegram_id == telegram_id)
-        result = await session.execute(stmt)
+        result = await session.execute(
+            select(User).where(User.telegram_id == telegram_id)
+        )
         user = result.scalar_one_or_none()
 
-        if not user:
-            user = User(
-                telegram_id=telegram_id,
-                username=message.from_user.username,
-                full_name=message.from_user.full_name,
-                bot_password=await hash_bot_password_async(password)
-            )
-            session.add(user)
+        if action == "remove":
+            if not user or not user.bot_password:
+                await clear_user_workflows(telegram_id, state)
+                await message.answer("❌ Пароль не установлен")
+                return
+            try:
+                password_valid = await verify_bot_password_async(
+                    user.bot_password,
+                    password,
+                    user_id=telegram_id,
+                )
+            except PasswordRateLimitError:
+                await clear_user_workflows(telegram_id, state)
+                await message.answer(
+                    "❌ Слишком много попыток. Повторите через минуту."
+                )
+                return
+            if not password_valid:
+                await clear_user_workflows(telegram_id, state)
+                await message.answer(
+                    "❌ <b>Неверный пароль!</b>",
+                    parse_mode="HTML",
+                )
+                return
+            user.bot_password = None
+            await session.commit()
         else:
-            user.bot_password = await hash_bot_password_async(password)
+            password_hash = await hash_bot_password_async(password)
+            if not user:
+                user = User(
+                    telegram_id=telegram_id,
+                    username=message.from_user.username,
+                    full_name=message.from_user.full_name,
+                    bot_password=password_hash,
+                )
+                session.add(user)
+            else:
+                user.bot_password = password_hash
+            user.last_activity = datetime.now(UTC).replace(tzinfo=None)
+            await session.commit()
 
-        await session.commit()
+    await clear_user_workflows(telegram_id, state)
+    if action == "remove":
+        await message.answer("✅ <b>Пароль удалён!</b>", parse_mode="HTML")
+        return
 
+    action_text = "изменён" if action == "change" else "установлен"
     await message.answer(
-        "✅ <b>Пароль установлен!</b>\n\n"
-        "Доступные команды:\n"
+        f"✅ <b>Пароль {action_text}!</b>\n\n"
         "<code>/lock</code> — заблокировать бота\n"
-        "<code>/unlock [пароль]</code> — разблокировать\n"
-        "<code>/set_lock_timeout [минуты]</code> — автоблокировка",
-        parse_mode="HTML"
+        "<code>/unlock [пароль]</code> — разблокировать",
+        parse_mode="HTML",
+    )
+
+
+@dp.message(
+    BotPasswordFlow.waiting_password,
+    F.text,
+    ~F.text.startswith("/"),
+)
+async def receive_bot_password(message: Message, state: FSMContext):
+    """Consume a bot-local password only after secure Telegram deletion."""
+    if message.from_user is None:
+        await state.clear()
+        return
+    if message.chat.type != ChatType.PRIVATE:
+        await delete_secret_message_or_abort(message)
+        await message.answer(
+            "❌ Пароли можно вводить только в личном чате с ботом."
+        )
+        return
+    if not await delete_secret_message_or_abort(message):
+        return
+
+    state_data = await state.get_data()
+    action = state_data.get("action")
+    if type(action) is not str or action not in {"set", "change", "remove"}:
+        await clear_user_workflows(message.from_user.id, state)
+        await message.answer("❌ Некорректное состояние настройки пароля")
+        return
+
+    await _process_bot_password(
+        message,
+        state,
+        (message.text or "").strip(),
+        action,
     )
 
 
 # ==================== КОМАНДА: ЗАБЛОКИРОВАТЬ БОТА ====================
 @dp.message(Command("lock"))
-async def cmd_lock(message: Message):
+async def cmd_lock(message: Message, state: FSMContext):
     """Заблокировать бота"""
     telegram_id = message.from_user.id
 
@@ -1362,6 +1571,8 @@ async def cmd_lock(message: Message):
         user.last_activity = None  # Блокируем
         await session.commit()
 
+    await clear_legacy_user_state(telegram_id)
+    await state.clear()
     await message.answer(
         "🔒 <b>БОТ ЗАБЛОКИРОВАН</b>\n\n"
         "Для разблокировки используйте:\n"
@@ -1377,9 +1588,16 @@ async def cmd_lock(message: Message):
 
 # ==================== КОМАНДА: РАЗБЛОКИРОВАТЬ БОТА ====================
 @dp.message(Command("unlock"))
-async def cmd_unlock(message: Message, command: CommandObject):
+async def cmd_unlock(
+    message: Message,
+    command: CommandObject,
+    state: FSMContext,
+):
     """Разблокировать бота"""
-    args = command.args.split() if command.args else []
+    if await _reject_password_outside_private_chat(message):
+        return
+
+    password = command.args.strip() if command.args else ""
     telegram_id = message.from_user.id
 
     # Удаляем сообщение с паролем для безопасности
@@ -1388,26 +1606,27 @@ async def cmd_unlock(message: Message, command: CommandObject):
     except:
         pass
 
-    if not args:
+    if not password:
         # Если пароль не передан — запрашиваем
-        user_states[telegram_id] = {
-            "state": "waiting_unlock_password"
-        }
+        await clear_legacy_user_state(telegram_id)
+        await state.set_state(UnlockFlow.waiting_password)
 
-        await message.answer(
-            "🔓 <b>РАЗБЛОКИРОВКА</b>\n\n"
-            "Отправьте пароль для разблокировки бота.\n\n"
-            "<i>Пароль не будет отображаться в чате.</i>",
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [InlineKeyboardButton(text="❌ Отмена", callback_data="back_to_start")]
-                ]
+        try:
+            await message.answer(
+                "🔓 <b>РАЗБЛОКИРОВКА</b>\n\n"
+                "Отправьте пароль для разблокировки бота.\n\n"
+                "<i>После отправки бот попытается удалить сообщение с паролем.</i>",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_unlock")]
+                    ]
+                )
             )
-        )
+        except Exception:
+            await state.clear()
+            raise
         return
-
-    password = args[0]
 
     async with AsyncSessionLocal() as session:
         stmt = select(User).where(User.telegram_id == telegram_id)
@@ -1415,6 +1634,8 @@ async def cmd_unlock(message: Message, command: CommandObject):
         user = result.scalar_one_or_none()
 
         if not user or not user.bot_password:
+            await clear_legacy_user_state(telegram_id)
+            await state.clear()
             await message.answer(
                 "❌ <b>Пароль не установлен!</b>\n\n"
                 "Сначала установите пароль:\n"
@@ -1444,14 +1665,99 @@ async def cmd_unlock(message: Message, command: CommandObject):
             user.bot_password = await hash_bot_password_async(password)
 
         # Разблокируем — устанавливаем время последней активности
-        user.last_activity = datetime.utcnow()
+        user.last_activity = datetime.now(UTC).replace(tzinfo=None)
         await session.commit()
 
+    await clear_legacy_user_state(telegram_id)
+    await state.clear()
     # Сообщение об успешной разблокировке
     await message.answer("✅ <b>Бот разблокирован!</b>", parse_mode="HTML")
 
     # Автоматически показываем главное меню
     await cmd_start_help(message)
+
+
+@dp.callback_query(F.data == "cancel_unlock")
+async def callback_cancel_unlock(
+    callback: CallbackQuery,
+    state: FSMContext,
+):
+    """Cancel password entry without exposing account data."""
+    await callback_feedback(callback)
+    await clear_legacy_user_state(callback.from_user.id)
+    await state.clear()
+    await callback.message.edit_text(
+        "🔒 <b>БОТ ЗАБЛОКИРОВАН</b>\n\n"
+        "Для разблокировки используйте:\n"
+        "<code>/unlock [пароль]</code>",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="🔓 Разблокировать", callback_data="unlock_bot")]
+            ]
+        ),
+    )
+
+
+@dp.message(
+    UnlockFlow.waiting_password,
+    F.text,
+    ~F.text.startswith("/"),
+)
+async def receive_unlock_password(
+    message: Message,
+    state: FSMContext,
+):
+    """Verify a bot-local unlock password without storing it in FSM data."""
+    if await _reject_password_outside_private_chat(message):
+        return
+
+    with suppress(TelegramAPIError):
+        await message.delete()
+
+    password = (message.text or "").strip()
+    telegram_id = message.from_user.id
+
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(User).where(User.telegram_id == telegram_id)
+        )
+        user = result.scalar_one_or_none()
+
+        if not user or not user.bot_password:
+            await state.clear()
+            await message.answer("❌ Пароль не установлен")
+            return
+
+        try:
+            password_valid = await verify_bot_password_async(
+                user.bot_password,
+                password,
+                user_id=telegram_id,
+            )
+        except PasswordRateLimitError:
+            await message.answer(
+                "❌ Слишком много попыток. Повторите через минуту."
+            )
+            return
+
+        if not password_valid:
+            await message.answer(
+                "❌ <b>Неверный пароль!</b>",
+                parse_mode="HTML",
+            )
+            return
+
+        if password_hash_needs_upgrade(user.bot_password):
+            user.bot_password = await hash_bot_password_async(password)
+
+        user.last_activity = datetime.utcnow()
+        await session.commit()
+
+    await state.clear()
+    await message.answer("✅ <b>Бот разблокирован!</b>", parse_mode="HTML")
+    await cmd_start_help(message)
+
 
 # ==================== КОМАНДА: НАСТРОЙКА АВТОБЛОКИРОВКИ ====================
 @dp.message(Command("set_lock_timeout"))

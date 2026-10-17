@@ -1,12 +1,22 @@
 """Extracted from the legacy bot module without behavior changes."""
 
 from aiogram.exceptions import TelegramAPIError
+from aiogram.enums import ChatType
 from aiogram.filters import Command, CommandObject
+from aiogram.fsm.context import FSMContext
 from aiogram.types import BufferedInputFile, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from datetime import datetime
+from html import escape
 from guardbot.archive_security import ArchiveSecurityError, validate_zip_entry_count
 from guardbot.bot.handlers.commands import build_mafile_dict
-from guardbot.bot.runtime import bot, dp, user_states
+from guardbot.bot.runtime import (
+    bot,
+    clear_legacy_user_state,
+    clear_user_workflows,
+    dp,
+    set_legacy_user_state,
+    user_states,
+)
 from guardbot.config import MAX_FILE_SIZE, MAX_ZIP_UNCOMPRESSED, logger
 from guardbot.database import AccountGroup, AsyncSessionLocal, Mafile
 from guardbot.security import decrypt_value, encrypt_value
@@ -243,7 +253,7 @@ async def process_txt_accounts(message: Message, user_id: int):
         if added:
             result_text += f"✅ <b>Добавлено новых ({len(added)}):</b>\n"
             for acc in added[:15]:
-                result_text += f"  • <code>{acc}</code>\n"
+                result_text += f"  • <code>{escape(str(acc))}</code>\n"
             if len(added) > 15:
                 result_text += f"  <i>... и еще {len(added) - 15}</i>\n"
             result_text += "\n"
@@ -251,7 +261,7 @@ async def process_txt_accounts(message: Message, user_id: int):
         if skipped:
             result_text += f"🔄 <b>Обновлены пароли ({len(skipped)}):</b>\n"
             for acc in skipped[:10]:
-                result_text += f"  • <code>{acc}</code>\n"
+                result_text += f"  • <code>{escape(str(acc))}</code>\n"
             if len(skipped) > 10:
                 result_text += f"  <i>... и еще {len(skipped) - 10}</i>\n"
             result_text += "\n"
@@ -259,7 +269,7 @@ async def process_txt_accounts(message: Message, user_id: int):
         if invalid_lines:
             result_text += f"⚠️ <b>Строки с ошибками ({len(invalid_lines)}):</b>\n"
             for err in invalid_lines[:5]:
-                result_text += f"  • {err}\n"
+                result_text += f"  • {escape(str(err))}\n"
             if len(invalid_lines) > 5:
                 result_text += f"  <i>... и еще {len(invalid_lines) - 5}</i>\n"
             result_text += "\n"
@@ -267,7 +277,7 @@ async def process_txt_accounts(message: Message, user_id: int):
         if errors:
             result_text += f"❌ <b>Ошибки при сохранении ({len(errors)}):</b>\n"
             for err in errors[:5]:
-                result_text += f"  • {err}\n"
+                result_text += f"  • {escape(str(err))}\n"
             if len(errors) > 5:
                 result_text += f"  <i>... и еще {len(errors) - 5}</i>\n"
             result_text += "\n"
@@ -298,7 +308,7 @@ async def process_txt_accounts(message: Message, user_id: int):
     except Exception as e:
         logger.error(f"Error processing TXT file: {e}", exc_info=True)
         await status_msg.edit_text(
-            f"❌ <b>Ошибка при обработке файла:</b>\n<code>{str(e)[:300]}</code>",
+            f"❌ <b>Ошибка при обработке файла:</b>\n<code>{escape(str(e)[:300])}</code>",
             parse_mode="HTML"
         )
 
@@ -490,7 +500,7 @@ async def process_zip_archive(message: Message, user_id: int):
                             mafile = Mafile(
                                 telegram_id=user_id,
                                 account_name=account_name,
-                                password="",
+                                password=encrypt_value(""),
                                 shared_secret=encrypt_value(shared_secret),
                                 identity_secret=encrypt_value(mafile_data.get('identity_secret')),
                                 secret_1=encrypt_value(mafile_data.get('secret_1')),
@@ -546,7 +556,7 @@ async def process_zip_archive(message: Message, user_id: int):
         if added:
             result_text += f"✅ <b>Добавлено новых ({len(added)}):</b>\n"
             for acc in added[:15]:
-                result_text += f"  • <code>{acc}</code>\n"
+                result_text += f"  • <code>{escape(str(acc))}</code>\n"
             if len(added) > 15:
                 result_text += f"  <i>... и еще {len(added) - 15}</i>\n"
             result_text += "\n"
@@ -554,7 +564,7 @@ async def process_zip_archive(message: Message, user_id: int):
         if updated:
             result_text += f"🔄 <b>Обновлено ({len(updated)}):</b>\n"
             for acc in updated[:10]:
-                result_text += f"  • <code>{acc}</code>\n"
+                result_text += f"  • <code>{escape(str(acc))}</code>\n"
             if len(updated) > 10:
                 result_text += f"  <i>... и еще {len(updated) - 10}</i>\n"
             result_text += "\n"
@@ -562,7 +572,7 @@ async def process_zip_archive(message: Message, user_id: int):
         if errors:
             result_text += f"❌ <b>Ошибки ({len(errors)}):</b>\n"
             for err in errors[:10]:
-                result_text += f"  • {err}\n"
+                result_text += f"  • {escape(str(err))}\n"
             if len(errors) > 10:
                 result_text += f"  <i>... и еще {len(errors) - 10}</i>\n"
             result_text += "\n"
@@ -604,7 +614,7 @@ async def process_zip_archive(message: Message, user_id: int):
     except Exception as e:
         logger.error(f"Error processing ZIP archive: {e}", exc_info=True)
         await status_msg.edit_text(
-            f"❌ <b>Ошибка при обработке архива:</b>\n<code>{str(e)[:300]}</code>",
+            f"❌ <b>Ошибка при обработке архива:</b>\n<code>{escape(str(e)[:300])}</code>",
             parse_mode="HTML"
         )
 
@@ -642,7 +652,7 @@ async def cmd_create_group(message: Message, command: CommandObject):
 
         if existing:
             await message.answer(
-                f"❌ Группа с названием <b>{group_name}</b> уже существует",
+                f"❌ Группа с названием <b>{escape(group_name)}</b> уже существует",
                 parse_mode="HTML"
             )
             return
@@ -661,8 +671,8 @@ async def cmd_create_group(message: Message, command: CommandObject):
         await session.commit()
 
     await message.answer(
-        f"✅ Группа <b>{group_name}</b> создана!\n"
-        f"Используйте <code>/add_to_group [аккаунт] {group_name}</code> для добавления аккаунтов.",
+        f"✅ Группа <b>{escape(group_name)}</b> создана!\n"
+        f"Используйте <code>/add_to_group [аккаунт] {escape(group_name)}</code> для добавления аккаунтов.",
         parse_mode="HTML"
     )
 
@@ -695,7 +705,7 @@ async def cmd_delete_group(message: Message, command: CommandObject):
         group = result.scalar_one_or_none()
 
         if not group:
-            await message.answer(f"❌ Группа <b>{group_name}</b> не найдена", parse_mode="HTML")
+            await message.answer(f"❌ Группа <b>{escape(group_name)}</b> не найдена", parse_mode="HTML")
             return
 
         # Считаем сколько аккаунтов в группе
@@ -707,7 +717,7 @@ async def cmd_delete_group(message: Message, command: CommandObject):
         await session.commit()
 
     await message.answer(
-        f"✅ Группа <b>{group_name}</b> удалена!\n"
+        f"✅ Группа <b>{escape(group_name)}</b> удалена!\n"
         f"📱 {count} аккаунтов остались без группы.",
         parse_mode="HTML"
     )
@@ -747,7 +757,10 @@ async def cmd_add_to_group(message: Message, command: CommandObject):
             mafile = next((mf for mf in mafiles if mf.account_name.lower() == account_input.lower()), None)
 
         if not mafile:
-            await message.answer(f"❌ Аккаунт <b>{account_input}</b> не найден", parse_mode="HTML")
+            await message.answer(
+                f"❌ Аккаунт <b>{escape(account_input)}</b> не найден",
+                parse_mode="HTML",
+            )
             return
 
         # Ищем группу
@@ -760,8 +773,8 @@ async def cmd_add_to_group(message: Message, command: CommandObject):
 
         if not group:
             await message.answer(
-                f"❌ Группа <b>{group_name}</b> не найдена\n\n"
-                f"Создайте группу: <code>/creategroup {group_name}</code>",
+                f"❌ Группа <b>{escape(group_name)}</b> не найдена\n\n"
+                f"Создайте группу: <code>/creategroup {escape(group_name)}</code>",
                 parse_mode="HTML"
             )
             return
@@ -771,8 +784,8 @@ async def cmd_add_to_group(message: Message, command: CommandObject):
         await session.commit()
 
     await message.answer(
-        f"✅ Аккаунт <b>{mafile.account_name}</b> перемещён:\n"
-        f"{old_group_name} → <b>{group_name}</b>",
+        f"✅ Аккаунт <b>{escape(mafile.account_name)}</b> перемещён:\n"
+        f"{escape(old_group_name)} → <b>{escape(group_name)}</b>",
         parse_mode="HTML"
     )
 
@@ -810,12 +823,15 @@ async def cmd_remove_from_group(message: Message, command: CommandObject):
             mafile = next((mf for mf in mafiles if mf.account_name.lower() == account_input.lower()), None)
 
         if not mafile:
-            await message.answer(f"❌ Аккаунт <b>{account_input}</b> не найден", parse_mode="HTML")
+            await message.answer(
+                f"❌ Аккаунт <b>{escape(account_input)}</b> не найден",
+                parse_mode="HTML",
+            )
             return
 
         if not mafile.group_id:
             await message.answer(
-                f"❌ Аккаунт <b>{mafile.account_name}</b> уже без группы",
+                f"❌ Аккаунт <b>{escape(mafile.account_name)}</b> уже без группы",
                 parse_mode="HTML"
             )
             return
@@ -825,21 +841,21 @@ async def cmd_remove_from_group(message: Message, command: CommandObject):
         await session.commit()
 
     await message.answer(
-        f"✅ Аккаунт <b>{mafile.account_name}</b> убран из группы <b>{old_group_name}</b>",
+        f"✅ Аккаунт <b>{escape(mafile.account_name)}</b> убран из группы <b>{escape(old_group_name)}</b>",
         parse_mode="HTML"
     )
 
 
 @dp.message(Command("showgroup"))
 @dp.message(Command("group"))
-async def cmd_show_group(message: Message, command: CommandObject):
+async def cmd_show_group(message: Message, command: CommandObject, state: FSMContext):
     """Показать аккаунты в группе: /showgroup [название]"""
     args = command.args.split() if command.args else []
     telegram_id = message.from_user.id
 
     if not args:
         # Показываем все группы
-        await cmd_groups(message)
+        await cmd_groups(message, state)
         return
 
     group_name = ' '.join(args)
@@ -853,7 +869,7 @@ async def cmd_show_group(message: Message, command: CommandObject):
         group = result.scalar_one_or_none()
 
         if not group:
-            await message.answer(f"❌ Группа <b>{group_name}</b> не найдена", parse_mode="HTML")
+            await message.answer(f"❌ Группа <b>{escape(group_name)}</b> не найдена", parse_mode="HTML")
             return
 
         # Получаем аккаунты группы
@@ -867,13 +883,13 @@ async def cmd_show_group(message: Message, command: CommandObject):
 
         if not mafiles:
             await message.answer(
-                f"📁 <b>{group_name}</b>\n\n❌ В этой группе нет аккаунтов",
+                f"📁 <b>{escape(group_name)}</b>\n\n❌ В этой группе нет аккаунтов",
                 parse_mode="HTML"
             )
             return
 
         # Формируем список
-        text = f"📁 <b>{group_name}</b> ({len(mafiles)} акк.)\n\n"
+        text = f"📁 <b>{escape(group_name)}</b> ({len(mafiles)} акк.)\n\n"
 
         for idx, mf in enumerate(mafiles, 1):
             pin = "📌" if mf.is_pinned else ""
@@ -886,7 +902,10 @@ async def cmd_show_group(message: Message, command: CommandObject):
             else:
                 steamid_short = "[нет]"
 
-            text += f"{idx}. {pin}{has_login}{guard} <code>{mf.account_name}</code> {steamid_short}\n"
+            text += (
+                f"{idx}. {pin}{has_login}{guard} "
+                f"<code>{escape(mf.account_name)}</code> {steamid_short}\n"
+            )
 
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
@@ -904,9 +923,16 @@ async def cmd_show_group(message: Message, command: CommandObject):
         await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
 
 @dp.message(Command("groups"))
-async def cmd_groups(message: Message):
+async def cmd_groups(message: Message, state: FSMContext):
     """Просмотр групп"""
     telegram_id = message.from_user.id
+    await clear_user_workflows(telegram_id, state)
+
+    if message.chat.type != ChatType.PRIVATE:
+        await message.answer(
+            "🔒 Управление группами доступно только в личном чате с ботом."
+        )
+        return
 
     async with AsyncSessionLocal() as session:
         stmt = select(AccountGroup).where(AccountGroup.telegram_id == telegram_id).order_by(AccountGroup.sort_order)
@@ -916,6 +942,12 @@ async def cmd_groups(message: Message):
         stmt = select(func.count(Mafile.id)).where(Mafile.telegram_id == telegram_id, Mafile.group_id == None)
         result = await session.execute(stmt)
         no_group_count = result.scalar() or 0
+
+        group_counts = []
+        for group in groups:
+            stmt = select(func.count(Mafile.id)).where(Mafile.group_id == group.id)
+            result = await session.execute(stmt)
+            group_counts.append((group, result.scalar() or 0))
 
     keyboard_buttons = []
 
@@ -927,11 +959,7 @@ async def cmd_groups(message: Message):
             )
         ])
 
-    for grp in groups:
-        stmt = select(func.count(Mafile.id)).where(Mafile.group_id == grp.id)
-        result = await session.execute(stmt)
-        count = result.scalar() or 0
-
+    for grp, count in group_counts:
         keyboard_buttons.append([
             InlineKeyboardButton(
                 text=f"📁 {grp.name} ({count})",
@@ -964,6 +992,12 @@ async def cmd_groups(message: Message):
 @dp.message(Command("export_group"))
 async def cmd_export_group(message: Message, command: CommandObject):
     """Экспорт всех аккаунтов из группы в ZIP: /exportgroup [название]"""
+    if message.chat.type != ChatType.PRIVATE:
+        await message.answer(
+            "❌ Экспорт доступен только в личном чате с ботом."
+        )
+        return
+
     args = command.args.split() if command.args else []
     telegram_id = message.from_user.id
 
@@ -987,7 +1021,7 @@ async def cmd_export_group(message: Message, command: CommandObject):
         group = result.scalar_one_or_none()
 
         if not group:
-            await message.answer(f"❌ Группа <b>{group_name}</b> не найдена", parse_mode="HTML")
+            await message.answer(f"❌ Группа <b>{escape(group_name)}</b> не найдена", parse_mode="HTML")
             return
 
         # Получаем аккаунты группы
@@ -1001,13 +1035,13 @@ async def cmd_export_group(message: Message, command: CommandObject):
 
         if not mafiles:
             await message.answer(
-                f"📁 <b>{group_name}</b>\n\n❌ В этой группе нет аккаунтов для экспорта",
+                f"📁 <b>{escape(group_name)}</b>\n\n❌ В этой группе нет аккаунтов для экспорта",
                 parse_mode="HTML"
             )
             return
 
         status_msg = await message.answer(
-            f"🔄 <b>Создаю архив группы \"{group_name}\"...</b>",
+            f"🔄 <b>Создаю архив группы \"{escape(group_name)}\"...</b>",
             parse_mode="HTML"
         )
 
@@ -1030,12 +1064,15 @@ async def cmd_export_group(message: Message, command: CommandObject):
 
 
             # Формируем список аккаунтов
-            accounts_list = "\n".join([f"• <code>{mf.account_name}</code>" for mf in mafiles[:20]])
+            accounts_list = "\n".join(
+                f"• <code>{escape(mf.account_name)}</code>"
+                for mf in mafiles[:20]
+            )
             if len(mafiles) > 20:
                 accounts_list += f"\n<i>... и еще {len(mafiles) - 20}</i>"
 
             await status_msg.edit_text(
-                f"📤 <b>Экспорт группы \"{group_name}\"</b>\n\n"
+                f"📤 <b>Экспорт группы \"{escape(group_name)}\"</b>\n\n"
                 f"📱 Аккаунтов: {exported_count}\n"
                 f"📦 Формат: ZIP архив\n\n"
                 f"<b>Аккаунты в архиве:</b>\n{accounts_list}",
@@ -1057,7 +1094,7 @@ async def cmd_export_group(message: Message, command: CommandObject):
 
         except Exception as e:
             await status_msg.edit_text(
-                f"❌ Ошибка при создании архива: {str(e)[:200]}",
+                f"❌ Ошибка при создании архива: {escape(str(e)[:200])}",
                 parse_mode="HTML"
             )
 
@@ -1067,7 +1104,6 @@ async def handle_mafile_for_account(message: Message, state_data: dict, user_id:
     mafile_id = state_data.get("mafile_id")
     account_name = state_data.get("account_name")
     client = state_data.get("client")
-    db_session = state_data.get("db_session")
     document = message.document
 
     if not document:
@@ -1100,8 +1136,8 @@ async def handle_mafile_for_account(message: Message, state_data: dict, user_id:
         if mafile_data.get('account_name') != account_name:
             await status_msg.edit_text(
                 f"❌ <b>Ошибка!</b>\n\n"
-                f"В файле указан аккаунт <code>{mafile_data.get('account_name')}</code>\n"
-                f"Но ожидается <code>{account_name}</code>",
+                f"В файле указан аккаунт <code>{escape(str(mafile_data.get('account_name')))}</code>\n"
+                f"Но ожидается <code>{escape(str(account_name))}</code>",
                 parse_mode="HTML"
             )
             return
@@ -1151,30 +1187,27 @@ async def handle_mafile_for_account(message: Message, state_data: dict, user_id:
             # Продолжаем вход с кодом
             await status_msg.edit_text(
                 f"✅ <b>Steam Guard импортирован!</b>\n\n"
-                f"📱 Аккаунт: <code>{account_name}</code>\n"
+                f"📱 Аккаунт: <code>{escape(str(account_name))}</code>\n"
                 f"🔐 Код: <code>{code}</code>\n\n"
                 f"Отправьте этот код для подтверждения входа.",
                 parse_mode="HTML"
             )
 
             # Сохраняем состояние для ввода кода
-            user_states[user_id] = {
+            await set_legacy_user_state(user_id, {
                 "state": "waiting_steam_code",
                 "account_name": account_name,
                 "client": client,
                 "mafile_id": mafile_id,
-                "db_session": db_session
-            }
+            })
 
     except json.JSONDecodeError as e:
         await status_msg.edit_text(f"❌ Ошибка JSON: {str(e)}")
-        user_states.pop(user_id, None)
-        await client.close()
+        await clear_legacy_user_state(user_id)
     except Exception as e:
         await status_msg.edit_text(f"❌ Ошибка: {str(e)}")
         logger.error(f"Error in handle_mafile_for_account: {e}")
-        user_states.pop(user_id, None)
-        await client.close()
+        await clear_legacy_user_state(user_id)
 
 async def process_steam_code(message: Message, state_data: dict, user_id: int):
     """Обработка кода подтверждения"""
@@ -1182,13 +1215,12 @@ async def process_steam_code(message: Message, state_data: dict, user_id: int):
     account_name = state_data.get("account_name")
     client = state_data.get("client")
     mafile_id = state_data.get("mafile_id")
-    db_session = state_data.get("db_session")
-
-    if not client:
+    if not client or not isinstance(mafile_id, int):
         await message.answer("❌ Сессия истекла. Попробуйте снова /login")
-        user_states.pop(user_id, None)
+        await clear_legacy_user_state(user_id)
         return
 
+    should_clear_state = True
     try:
         try:
             await message.delete()
@@ -1197,7 +1229,15 @@ async def process_steam_code(message: Message, state_data: dict, user_id: int):
         status_msg = await message.answer("🔄 Подтверждаю вход...", parse_mode="HTML")
 
         await client.confirm_login(code)
-        await SteamSessionManager.save_steam_session_to_db(db_session, mafile_id, client)
+        async with AsyncSessionLocal() as session:
+            mafile = await get_owned_mafile(session, mafile_id, user_id)
+            if not mafile:
+                raise ValueError("Steam account is unavailable")
+            await SteamSessionManager.save_steam_session_to_db(
+                session,
+                mafile.id,
+                client,
+            )
 
         # Проверяем, какой тип входа был
         current_state = state_data.get("state")
@@ -1232,7 +1272,7 @@ async def process_steam_code(message: Message, state_data: dict, user_id: int):
                     f"✅ <b>Успешный вход!</b>\n"
                     f"SteamID: <code>{client.steamid}</code>\n\n"
                     f"🔐 Steam Guard работает!\n"
-                    f"Используйте <code>/gc {account_name}</code> для получения кодов.",
+                    f"Используйте <code>/gc {escape(str(account_name))}</code> для получения кодов.",
                     parse_mode="HTML"
                 )
             else:
@@ -1243,14 +1283,15 @@ async def process_steam_code(message: Message, state_data: dict, user_id: int):
                 )
 
     except InvalidSteamGuardCode:
+        should_clear_state = False
         await message.answer("❌ Неверный код подтверждения. Попробуйте еще раз.")
         return
     except Exception as e:
         await message.answer(f"❌ Ошибка при подтверждении: {str(e)}")
         logger.error(f"Error confirming login for {account_name}: {e}")
     finally:
-        await client.close()
-        user_states.pop(user_id, None)
+        if should_clear_state:
+            await clear_legacy_user_state(user_id)
 
 async def process_mafile_for_account(message: Message, user_id: int, state_data: dict):
     """Обработка mafile для конкретного аккаунта (из кнопки импорта)"""
@@ -1278,12 +1319,12 @@ async def process_mafile_for_account(message: Message, user_id: int, state_data:
         if mafile_data.get('account_name') != account_name:
             await status_msg.edit_text(
                 f"❌ <b>Ошибка!</b>\n\n"
-                f"В файле указан аккаунт <code>{mafile_data.get('account_name')}</code>\n"
-                f"Но ожидается <code>{account_name}</code>\n\n"
+                f"В файле указан аккаунт <code>{escape(str(mafile_data.get('account_name')))}</code>\n"
+                f"Но ожидается <code>{escape(str(account_name))}</code>\n\n"
                 f"Отправьте правильный mafile для этого аккаунта.",
                 parse_mode="HTML"
             )
-            user_states.pop(user_id, None)
+            await clear_legacy_user_state(user_id)
             return
 
         # Проверяем обязательные поля
@@ -1292,7 +1333,7 @@ async def process_mafile_for_account(message: Message, user_id: int, state_data:
                 "❌ В файле отсутствует обязательное поле shared_secret",
                 parse_mode="HTML"
             )
-            user_states.pop(user_id, None)
+            await clear_legacy_user_state(user_id)
             return
 
         async with AsyncSessionLocal() as session:
@@ -1300,7 +1341,7 @@ async def process_mafile_for_account(message: Message, user_id: int, state_data:
 
             if not mafile:
                 await status_msg.edit_text("❌ Аккаунт не найден в базе")
-                user_states.pop(user_id, None)
+                await clear_legacy_user_state(user_id)
                 return
 
             # Обновляем данные (шифруем)
@@ -1351,7 +1392,7 @@ async def process_mafile_for_account(message: Message, user_id: int, state_data:
 
                 await status_msg.edit_text(
                     f"✅ <b>Steam Guard успешно импортирован!</b>\n\n"
-                    f"📱 <b>Аккаунт:</b> <code>{account_name}</code>\n"
+                    f"📱 <b>Аккаунт:</b> <code>{escape(str(account_name))}</code>\n"
                     f"🔐 <b>Тестовый код:</b> <code>{code}</code>\n\n"
                     f"Теперь вы можете получать коды!",
                     parse_mode="HTML",
@@ -1361,7 +1402,7 @@ async def process_mafile_for_account(message: Message, user_id: int, state_data:
             except Exception as e:
                 await status_msg.edit_text(
                     f"⚠️ <b>Данные сохранены, но есть проблема с генерацией кода:</b>\n"
-                    f"<code>{str(e)}</code>\n\n"
+                    f"<code>{escape(str(e))}</code>\n\n"
                     f"Попробуйте выполнить вход для синхронизации.",
                     parse_mode="HTML",
                     reply_markup=InlineKeyboardMarkup(
@@ -1382,14 +1423,13 @@ async def process_mafile_for_account(message: Message, user_id: int, state_data:
         await status_msg.edit_text(f"❌ Ошибка при импорте: {str(e)}")
         logger.error(f"Error importing mafile for account {account_name}: {e}")
     finally:
-        user_states.pop(user_id, None)
+        await clear_legacy_user_state(user_id)
 
 async def process_mafile_during_login(message: Message, user_id: int, state_data: dict):
     """Обработка mafile во время входа"""
     mafile_id = state_data.get("mafile_id")
     account_name = state_data.get("account_name")
     client = state_data.get("client")
-    db_session = state_data.get("db_session")
     document = message.document
 
     status_msg = await message.answer("🔄 Обрабатываю файл...")
@@ -1410,8 +1450,8 @@ async def process_mafile_during_login(message: Message, user_id: int, state_data
 
         if mafile_data.get('account_name') != account_name:
             await status_msg.edit_text(
-                f"❌ В файле указан аккаунт <code>{mafile_data.get('account_name')}</code>, "
-                f"но ожидается <code>{account_name}</code>",
+                f"❌ В файле указан аккаунт <code>{escape(str(mafile_data.get('account_name')))}</code>, "
+                f"но ожидается <code>{escape(str(account_name))}</code>",
                 parse_mode="HTML"
             )
             return
@@ -1449,17 +1489,16 @@ async def process_mafile_during_login(message: Message, user_id: int, state_data
         code = client.generate_steam_guard_code()
 
         # Обновляем состояние на ожидание кода
-        user_states[user_id] = {
+        await set_legacy_user_state(user_id, {
             "state": "waiting_steam_code",
             "account_name": account_name,
             "client": client,
             "mafile_id": mafile_id,
-            "db_session": db_session
-        }
+        })
 
         await status_msg.edit_text(
             f"✅ <b>Steam Guard импортирован!</b>\n\n"
-            f"📱 Аккаунт: <code>{account_name}</code>\n"
+            f"📱 Аккаунт: <code>{escape(str(account_name))}</code>\n"
             f"🔐 Ваш текущий код: <b><code>{code}</code></b>\n\n"
             f"Отправьте этот код в чат для подтверждения входа.",
             parse_mode="HTML"
@@ -1468,10 +1507,15 @@ async def process_mafile_during_login(message: Message, user_id: int, state_data
     except Exception as e:
         await status_msg.edit_text(f"❌ Ошибка: {str(e)}")
         logger.error(f"Error in process_mafile_during_login: {e}")
-        user_states.pop(user_id, None)
+        await clear_legacy_user_state(user_id)
 
 async def process_bulk_import(message: Message, user_id: int):
     """Обработка массового импорта аккаунтов"""
+    try:
+        await message.delete()
+    except TelegramAPIError:
+        pass
+
     text = message.text.strip()
 
     if not text:
@@ -1488,7 +1532,7 @@ async def process_bulk_import(message: Message, user_id: int):
 
     if not accounts:
         await message.answer("❌ Не найдено ни одного аккаунта в сообщении")
-        user_states.pop(user_id, None)
+        await clear_legacy_user_state(user_id)
         return
 
     # Проверяем формат каждого аккаунта
@@ -1511,7 +1555,7 @@ async def process_bulk_import(message: Message, user_id: int):
             f"Ожидается: <code>login:password</code>",
             parse_mode="HTML"
         )
-        user_states.pop(user_id, None)
+        await clear_legacy_user_state(user_id)
         return
 
     # Отправляем сообщение о начале импорта
@@ -1549,7 +1593,7 @@ async def process_bulk_import(message: Message, user_id: int):
                 mafile = Mafile(
                     telegram_id=user_id,
                     account_name=account_name,
-                    password=password,
+                    password=encrypt_value(password),
                     unique_proxy=False,
                     sort_order=max_order + idx
                 )
@@ -1585,7 +1629,7 @@ async def process_bulk_import(message: Message, user_id: int):
     if added:
         result_text += "<b>Добавленные аккаунты:</b>\n"
         for acc_name, _ in added[:10]:
-            result_text += f"• <code>{acc_name}</code>\n"
+            result_text += f"• <code>{escape(str(acc_name))}</code>\n"
         if len(added) > 10:
             result_text += f"<i>... и еще {len(added) - 10}</i>\n"
         result_text += "\n"
@@ -1593,7 +1637,7 @@ async def process_bulk_import(message: Message, user_id: int):
     if skipped:
         result_text += "<b>Пропущенные (уже в базе):</b>\n"
         for acc_name in skipped[:5]:
-            result_text += f"• <code>{acc_name}</code>\n"
+            result_text += f"• <code>{escape(str(acc_name))}</code>\n"
         if len(skipped) > 5:
             result_text += f"<i>... и еще {len(skipped) - 5}</i>\n"
         result_text += "\n"
@@ -1601,7 +1645,7 @@ async def process_bulk_import(message: Message, user_id: int):
     if errors:
         result_text += "<b>Ошибки:</b>\n"
         for err in errors[:5]:
-            result_text += f"• {err}\n"
+            result_text += f"• {escape(str(err))}\n"
         if len(errors) > 5:
             result_text += f"<i>... и еще {len(errors) - 5}</i>\n"
         result_text += "\n"
@@ -1628,4 +1672,4 @@ async def process_bulk_import(message: Message, user_id: int):
     keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
 
     await status_msg.edit_text(result_text, parse_mode="HTML", reply_markup=keyboard)
-    user_states.pop(user_id, None)
+    await clear_legacy_user_state(user_id)

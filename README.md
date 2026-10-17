@@ -18,7 +18,7 @@ Telegram-бот для управления Steam-аккаунтами, кода
 
 ## Настройка
 
-Требуется Python 3.11 или новее. Рекомендуемый способ установки через `uv`:
+Требуется Python 3.14 или новее. Рекомендуемый способ установки через `uv`:
 
 ```bash
 uv sync --dev
@@ -85,6 +85,6 @@ uv run ruff check --select E9,F63,F7,F82 guardbot tgbot.py tools tests
 uv run ruff check --select E9,F63,F7,F82,I001,F401,F811 guardbot/steam tests/test_proxy_security.py tests/test_crypto_security.py tests/test_steam_client_architecture.py
 ```
 
-Pytest и compileall автоматически выполняются в GitHub Actions на Python 3.11
-и 3.14. Ruff запускается на Python 3.14: он проверяет критические ошибки во
-всём проекте и более строгий набор правил в поддерживаемых Steam-модулях.
+Pytest, compileall и Ruff автоматически выполняются в GitHub Actions на Python
+3.14. Ruff проверяет критические ошибки во всём проекте и более строгий набор
+правил в поддерживаемых Steam-модулях.

@@ -3,9 +3,9 @@ name = "steam-guard-manager-bot"
 version = "0.1.0"
 description = "Telegram interface for managing Steam Guard accounts"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.14"
 dependencies = [
-    "aiogram>=3.27,<4",
+    "aiogram>=3.31,<4",
     "aiohttp>=3.12,<4",
     "aiohttp-socks>=0.11,<1",
     "asyncpg>=0.30,<1",
