@@ -14,11 +14,10 @@ from guardbot.bot.runtime import (
     clear_legacy_user_state,
     clear_user_workflows,
     dp,
-    require_proxy,
-    set_legacy_user_state,
     stop_trade_check_task,
     user_states,
 )
+from guardbot.bot.states import BulkImportFlow
 from guardbot.config import logger
 from guardbot.database import AsyncSessionLocal, Mafile, User, save_user
 from guardbot.security import decrypt_value
@@ -260,15 +259,20 @@ async def cmd_remove_general_proxy(message: Message):
 @dp.message(Command("import_bulk"))
 @dp.message(Command("mass_import"))
 @dp.message(Command("bulk_import"))
-@require_proxy
-async def cmd_bulk_import(message: Message, **kwargs):  # добавить **kwargs
+async def cmd_bulk_import(message: Message, state: FSMContext):
     """Массовый импорт аккаунтов"""
-    await set_legacy_user_state(
-        message.from_user.id,
-        {"state": "waiting_bulk_credentials"},
-    )
+    if message.from_user is None:
+        raise RuntimeError("Telegram user is unavailable for this message")
+    if message.chat.type != ChatType.PRIVATE:
+        await message.answer(
+            "❌ Данные аккаунтов можно вводить только в личном чате с ботом."
+        )
+        return
 
     try:
+        await clear_user_workflows(message.from_user.id, state)
+        await state.set_state(BulkImportFlow.waiting_credentials)
+        await state.set_data({})
         await message.answer(
             "📦 <b>МАССОВЫЙ ИМПОРТ АККАУНТОВ</b>\n\n"
             "Отправьте список аккаунтов в формате:\n"
@@ -277,21 +281,28 @@ async def cmd_bulk_import(message: Message, **kwargs):  # добавить **kwa
             "Для отмены используйте /cancel",
             parse_mode="HTML"
         )
-    except Exception:
-        await clear_legacy_user_state(message.from_user.id)
+    except (Exception, asyncio.CancelledError):
+        await clear_user_workflows(message.from_user.id, state)
         raise
 
 
 @dp.callback_query(F.data == "bulk_import_menu")
-async def callback_bulk_import_menu(callback: CallbackQuery):
+async def callback_bulk_import_menu(callback: CallbackQuery, state: FSMContext):
     """Кнопка массового импорта из меню"""
     await callback_feedback(callback)
-    await set_legacy_user_state(
-        callback.from_user.id,
-        {"state": "waiting_bulk_credentials"},
-    )
+    chat = getattr(callback.message, "chat", None)
+    if getattr(chat, "type", None) != ChatType.PRIVATE:
+        await callback_feedback(
+            callback,
+            "❌ Данные аккаунтов можно вводить только в личном чате с ботом.",
+            show_alert=True,
+        )
+        return
 
     try:
+        await clear_user_workflows(callback.from_user.id, state)
+        await state.set_state(BulkImportFlow.waiting_credentials)
+        await state.set_data({})
         await callback.message.edit_text(
             "📦 <b>МАССОВЫЙ ИМПОРТ АККАУНТОВ</b>\n\n"
             "Отправьте список аккаунтов в формате:\n"
@@ -305,8 +316,8 @@ async def callback_bulk_import_menu(callback: CallbackQuery):
                 ]
             )
         )
-    except Exception:
-        await clear_legacy_user_state(callback.from_user.id)
+    except (Exception, asyncio.CancelledError):
+        await clear_user_workflows(callback.from_user.id, state)
         raise
 
 @dp.callback_query(F.data == "cancel_state_to_start")

@@ -30,6 +30,7 @@ from guardbot.bot.runtime import (
 from guardbot.bot.states import (
     AccountAddFlow,
     AccountMaFileImportFlow,
+    BulkImportFlow,
     NoteFlow,
     ProxyFlow,
 )
@@ -2780,7 +2781,7 @@ async def cmd_cancel(message: Message, state: FSMContext):
         await message.answer("❌ Изменение заметки отменено.")
     elif current_state == ProxyFlow.waiting_proxy.state:
         await message.answer("❌ Настройка прокси отменена.")
-    elif legacy_state == "waiting_bulk_credentials":
+    elif current_state == BulkImportFlow.waiting_credentials.state:
         await message.answer("❌ Массовый импорт отменен.")
     elif had_workflow:
         await message.answer("❌ Действие отменено.")

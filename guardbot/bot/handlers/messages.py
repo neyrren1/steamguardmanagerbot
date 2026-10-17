@@ -9,7 +9,7 @@ from aiogram.exceptions import TelegramAPIError
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 from datetime import datetime
 from guardbot.bot.handlers.accounts import perform_login_full, update_account_settings_message
-from guardbot.bot.handlers.bulk_import import handle_mafile_for_account, process_bulk_import, process_steam_code, process_txt_accounts, process_zip_archive
+from guardbot.bot.handlers.bulk_import import handle_mafile_for_account, process_steam_code, process_txt_accounts, process_zip_archive
 from guardbot.bot.handlers.common import cmd_start_help
 from guardbot.bot.handlers.imports import process_single_mafile
 from guardbot.bot.runtime import (
@@ -49,10 +49,6 @@ async def handle_messages(message: Message):
     elif state == "waiting_email_code":
         # Обработка кода с почты
         await process_steam_code(message, state_data, user_id)
-    # В обработка массового импорта акков
-    elif state == "waiting_bulk_credentials":
-        await process_bulk_import(message, user_id)
-
     # ========== СОСТОЯНИЕ: ОЖИДАНИЕ ПАРОЛЯ ДЛЯ ВХОДА ==========
     elif state == "waiting_password_for_login":
         password = message.text.strip()

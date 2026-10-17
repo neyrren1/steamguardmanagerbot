@@ -21,6 +21,7 @@ from guardbot.bot.states import (
     AccountAddFlow,
     AccountMaFileImportFlow,
     BotPasswordFlow,
+    BulkImportFlow,
     CustomPriceFlow,
     NoteFlow,
     ProxyFlow,
@@ -135,7 +136,6 @@ _SECRET_PROMPT_CALLBACK_PREFIXES = (
     "setup_steamguard_",
 )
 _SECRET_LEGACY_STATES = {
-    "waiting_bulk_credentials",
     "waiting_email_code",
     "waiting_mafile",
     "waiting_password_for_login",
@@ -148,6 +148,7 @@ _SECRET_FSM_STATES = {
     AccountAddFlow.waiting_credentials.state,
     AccountMaFileImportFlow.waiting_document.state,
     BotPasswordFlow.waiting_password.state,
+    BulkImportFlow.waiting_credentials.state,
     NoteFlow.waiting_note.state,
     ProxyFlow.waiting_proxy.state,
     UnlockFlow.waiting_password.state,

@@ -1,5 +1,6 @@
 """Extracted from the legacy bot module without behavior changes."""
 
+from aiogram import F
 from aiogram.exceptions import TelegramAPIError
 from aiogram.enums import ChatType
 from aiogram.filters import Command, CommandObject
@@ -13,10 +14,12 @@ from guardbot.bot.runtime import (
     bot,
     clear_legacy_user_state,
     clear_user_workflows,
+    delete_secret_message_or_abort,
     dp,
     set_legacy_user_state,
     user_states,
 )
+from guardbot.bot.states import BulkImportFlow
 from guardbot.config import MAX_FILE_SIZE, MAX_ZIP_UNCOMPRESSED, logger
 from guardbot.database import AccountGroup, AsyncSessionLocal, Mafile
 from guardbot.security import decrypt_value, encrypt_value
@@ -1509,14 +1512,25 @@ async def process_mafile_during_login(message: Message, user_id: int, state_data
         logger.error(f"Error in process_mafile_during_login: {e}")
         await clear_legacy_user_state(user_id)
 
-async def process_bulk_import(message: Message, user_id: int):
+@dp.message(
+    BulkImportFlow.waiting_credentials,
+    F.text,
+    ~F.text.startswith("/"),
+)
+async def process_bulk_import(message: Message, state: FSMContext):
     """Обработка массового импорта аккаунтов"""
-    try:
-        await message.delete()
-    except TelegramAPIError:
-        pass
+    if not await delete_secret_message_or_abort(message):
+        return
+    if message.chat.type != ChatType.PRIVATE:
+        await message.answer(
+            "❌ Данные аккаунтов можно вводить только в личном чате с ботом."
+        )
+        return
 
-    text = message.text.strip()
+    if message.from_user is None:
+        raise RuntimeError("Telegram user is unavailable for this message")
+    user_id = message.from_user.id
+    text = (message.text or "").strip()
 
     if not text:
         await message.answer("❌ Отправьте список аккаунтов")
@@ -1532,7 +1546,6 @@ async def process_bulk_import(message: Message, user_id: int):
 
     if not accounts:
         await message.answer("❌ Не найдено ни одного аккаунта в сообщении")
-        await clear_legacy_user_state(user_id)
         return
 
     # Проверяем формат каждого аккаунта
@@ -1555,7 +1568,6 @@ async def process_bulk_import(message: Message, user_id: int):
             f"Ожидается: <code>login:password</code>",
             parse_mode="HTML"
         )
-        await clear_legacy_user_state(user_id)
         return
 
     # Отправляем сообщение о начале импорта
@@ -1618,6 +1630,8 @@ async def process_bulk_import(message: Message, user_id: int):
         # Сохраняем все изменения
         await session.commit()
 
+    await clear_user_workflows(user_id, state)
+
     # Формируем итоговое сообщение
     result_text = (
         f"📊 <b>РЕЗУЛЬТАТЫ ИМПОРТА</b>\n\n"
@@ -1672,4 +1686,19 @@ async def process_bulk_import(message: Message, user_id: int):
     keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
 
     await status_msg.edit_text(result_text, parse_mode="HTML", reply_markup=keyboard)
-    await clear_legacy_user_state(user_id)
+
+
+@dp.message(BulkImportFlow.waiting_credentials)
+async def reject_bulk_import_non_text(message: Message, state: FSMContext) -> None:
+    """Keep unrelated media out of the legacy catch-all during bulk import."""
+    if not await delete_secret_message_or_abort(message):
+        return
+    if message.chat.type != ChatType.PRIVATE:
+        await message.answer(
+            "❌ Данные аккаунтов можно вводить только в личном чате с ботом."
+        )
+        return
+    await message.answer(
+        "❌ Отправьте список аккаунтов текстом в формате login:password "
+        "или используйте /cancel."
+    )

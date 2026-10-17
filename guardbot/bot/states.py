@@ -56,3 +56,9 @@ class AccountMaFileImportFlow(StatesGroup):
     """Collect a maFile document for an existing owned account."""
 
     waiting_document = State()
+
+
+class BulkImportFlow(StatesGroup):
+    """Collect bulk account credentials without persisting them in FSM."""
+
+    waiting_credentials = State()

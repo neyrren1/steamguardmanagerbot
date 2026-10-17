@@ -336,7 +336,6 @@ def test_group_unlock_text_is_deleted_before_lock_short_circuit(monkeypatch) -> 
 @pytest.mark.parametrize(
     "legacy_state",
     [
-        "waiting_bulk_credentials",
         "waiting_password_for_login",
         "waiting_password_for_mafile",
         "waiting_steam_code_or_mafile",
@@ -720,7 +719,7 @@ def test_prompt_error_middleware_clears_secret_state() -> None:
         async def handler(event, data):
             await runtime.set_legacy_user_state(
                 987,
-                {"state": "waiting_bulk_credentials"},
+                {"state": "waiting_password_for_login"},
             )
             raise TelegramBadRequest(
                 method=SendMessage(chat_id=987, text="prompt"),
@@ -943,7 +942,7 @@ def test_cancel_command_clears_both_stores_before_lock_database_failure(
         state = _state(993)
         await state.set_state(BotPasswordFlow.waiting_password)
         await state.set_data({"action": "set"})
-        runtime.user_states[993] = {"state": "waiting_bulk_credentials"}
+        runtime.user_states[993] = {"state": "waiting_password_for_login"}
 
         async def handler(event, data):
             raise AssertionError("lock database failure must precede dispatch")
@@ -1020,7 +1019,7 @@ def test_cancel_command_mentions_only_affect_the_current_bot(monkeypatch) -> Non
         await state.set_data({"action": "set"})
         resource = Resource()
         runtime.user_states[995] = {
-            "state": "waiting_bulk_credentials",
+            "state": "waiting_password_for_login",
             "client": resource,
         }
         message = Message(
@@ -1062,7 +1061,7 @@ def test_cancel_command_mentions_only_affect_the_current_bot(monkeypatch) -> Non
                 assert resource.closed is True
                 assert dispatched is True
             else:
-                assert runtime.user_states[995]["state"] == "waiting_bulk_credentials"
+                assert runtime.user_states[995]["state"] == "waiting_password_for_login"
                 assert await state.get_state() == BotPasswordFlow.waiting_password.state
                 assert await state.get_data() == {"action": "set"}
                 assert resource.closed is False
@@ -1157,7 +1156,7 @@ def test_caption_commands_and_untexted_secret_documents_are_safe(monkeypatch) ->
         await state.set_data({"action": "set"})
         resource = Resource()
         runtime.user_states[996] = {
-            "state": "waiting_bulk_credentials",
+            "state": "waiting_password_for_login",
             "client": resource,
         }
         message = make_document_message(caption)
@@ -1191,7 +1190,7 @@ def test_caption_commands_and_untexted_secret_documents_are_safe(monkeypatch) ->
                 assert resource.closed is True
                 assert dispatched is True
             else:
-                assert runtime.user_states[996]["state"] == "waiting_bulk_credentials"
+                assert runtime.user_states[996]["state"] == "waiting_password_for_login"
                 assert await state.get_state() == BotPasswordFlow.waiting_password.state
                 assert await state.get_data() == {"action": "set"}
                 assert resource.closed is False
