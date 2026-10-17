@@ -51,7 +51,7 @@ def test_bulk_import_command_starts_typed_flow_without_proxy(monkeypatch) -> Non
     user_id = 801
     state = FakeState()
     message = PromptMessage(state, user_id)
-    runtime.user_states[user_id] = {"state": "waiting_password_for_login"}
+    runtime.user_states[user_id] = {"state": "waiting_password_for_mafile"}
 
     async def proxy_lookup_must_not_run(*_args, **_kwargs):
         raise AssertionError("local credential collection must not require a proxy")
@@ -83,7 +83,7 @@ def test_bulk_import_callback_starts_typed_flow_before_prompt(monkeypatch) -> No
     state = FakeState()
     message = PromptMessage(state, user_id)
     callback = SimpleNamespace(from_user=SimpleNamespace(id=user_id), message=message)
-    runtime.user_states[user_id] = {"state": "waiting_password_for_login"}
+    runtime.user_states[user_id] = {"state": "waiting_password_for_mafile"}
 
     async def feedback(*_args, **_kwargs) -> None:
         return None
@@ -481,7 +481,7 @@ def test_bulk_command_prompt_failure_rolls_back_both_stores() -> None:
 
     user_id = 808
     state = FakeState()
-    runtime.user_states[user_id] = {"state": "waiting_password_for_login"}
+    runtime.user_states[user_id] = {"state": "waiting_password_for_mafile"}
 
     class Message(PromptMessage):
         async def answer(self, *_args, **_kwargs) -> None:
@@ -511,7 +511,7 @@ def test_bulk_callback_prompt_failure_rolls_back_both_stores(monkeypatch) -> Non
 
     user_id = 809
     state = FakeState()
-    runtime.user_states[user_id] = {"state": "waiting_password_for_login"}
+    runtime.user_states[user_id] = {"state": "waiting_password_for_mafile"}
 
     class Message(PromptMessage):
         async def edit_text(self, *_args, **_kwargs) -> None:

@@ -436,7 +436,9 @@ def test_login_command_is_rejected_before_proxy_lookup_outside_private_chat(
 
 
 def test_password_login_handoff_preserves_new_challenge_state(monkeypatch) -> None:
-    from guardbot.bot.handlers import messages
+    from guardbot.bot import runtime
+    from guardbot.bot.handlers import accounts
+    from guardbot.bot.states import LoginPasswordFlow
 
     class Session:
         async def commit(self) -> None:
@@ -460,7 +462,6 @@ def test_password_login_handoff_preserves_new_challenge_state(monkeypatch) -> No
         from_user = SimpleNamespace(id=987)
         chat = SimpleNamespace(type="private")
         text = "password"
-        document = None
 
         async def delete(self) -> None:
             return None
@@ -470,35 +471,42 @@ def test_password_login_handoff_preserves_new_challenge_state(monkeypatch) -> No
 
     mafile = SimpleNamespace(id=1, account_name="account", password=None)
     client = Client()
-    messages.user_states[987] = {
-        "state": "waiting_password_for_login",
-        "mafile_id": 1,
-        "account_name": "account",
-    }
+
+    class State:
+        def __init__(self) -> None:
+            self.state = LoginPasswordFlow.waiting_password.state
+            self.data = {"mafile_id": 1}
+
+        async def get_data(self):
+            return dict(self.data)
+
+        async def clear(self) -> None:
+            self.state = None
+            self.data = {}
 
     async def perform_login(*args, **kwargs) -> None:
-        messages.user_states[987] = {
+        runtime.user_states[987] = {
             "state": "waiting_email_code",
             "client": client,
             "mafile_id": 1,
         }
 
-    monkeypatch.setattr(messages, "AsyncSessionLocal", SessionContext)
+    monkeypatch.setattr(accounts, "AsyncSessionLocal", SessionContext)
     monkeypatch.setattr(
-        messages,
+        accounts,
         "get_owned_mafile",
         lambda *args, **kwargs: _async_result(mafile),
     )
-    monkeypatch.setattr(messages, "encrypt_value", lambda value: "encrypted")
-    monkeypatch.setattr(messages, "perform_login_full", perform_login)
+    monkeypatch.setattr(accounts, "encrypt_value", lambda value: "encrypted")
+    monkeypatch.setattr(accounts, "perform_login_full", perform_login)
 
     async def scenario() -> None:
         try:
-            await messages.handle_messages(Message())
-            assert messages.user_states[987]["state"] == "waiting_email_code"
+            await accounts.receive_login_password(Message(), State())
+            assert runtime.user_states[987]["state"] == "waiting_email_code"
             assert client.closed is False
         finally:
-            await messages.clear_legacy_user_state(987)
+            await runtime.clear_legacy_user_state(987)
 
     asyncio.run(scenario())
 

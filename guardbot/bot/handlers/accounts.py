@@ -31,6 +31,7 @@ from guardbot.bot.states import (
     AccountAddFlow,
     AccountMaFileImportFlow,
     BulkImportFlow,
+    LoginPasswordFlow,
     NoteFlow,
     ProxyFlow,
 )
@@ -1549,7 +1550,7 @@ async def perform_login_full(message: Message, mafile: Mafile, db_session: Async
 
 @dp.callback_query(F.data.startswith("enter_password_"))
 @validated_callback_data(r"enter_password_(?P<db_id>[1-9][0-9]{0,9})")
-async def callback_enter_password(callback: CallbackQuery):
+async def callback_enter_password(callback: CallbackQuery, state: FSMContext):
     """Запрос пароля для входа"""
     mafile_id = int(callback.data.split("_")[2])
 
@@ -1561,25 +1562,92 @@ async def callback_enter_password(callback: CallbackQuery):
             return
 
         await callback_feedback(callback)
-        await set_legacy_user_state(callback.from_user.id, {
-            "state": "waiting_password_for_login",
-            "mafile_id": mafile.id,
-            "account_name": mafile.account_name
-        })
-
-        await callback.message.edit_text(
-            f"🔑 <b>Введите пароль для {escape(str(mafile.account_name))}:</b>\n\n"
-            f"Пароль будет сохранен в базе данных.",
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [InlineKeyboardButton(
-                        text="❌ Отмена",
-                        callback_data=f"account_detail_{mafile.id}"
-                    )]
-                ]
+        try:
+            await clear_user_workflows(callback.from_user.id, state)
+            await state.set_state(LoginPasswordFlow.waiting_password)
+            await state.set_data({"mafile_id": mafile.id})
+            await callback.message.edit_text(
+                f"🔑 <b>Введите пароль для {escape(str(mafile.account_name))}:</b>\n\n"
+                f"Пароль будет сохранен в базе данных.",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [InlineKeyboardButton(
+                            text="❌ Отмена",
+                            callback_data=f"account_detail_{mafile.id}"
+                        )]
+                    ]
+                )
             )
+        except (Exception, asyncio.CancelledError):
+            await clear_user_workflows(callback.from_user.id, state)
+            raise
+
+
+@dp.message(
+    LoginPasswordFlow.waiting_password,
+    F.text,
+    ~F.text.startswith("/"),
+)
+async def receive_login_password(message: Message, state: FSMContext) -> None:
+    """Persist a missing Steam password, then start proxy-enforced login."""
+    if not await delete_secret_message_or_abort(message):
+        return
+    if message.chat.type != ChatType.PRIVATE:
+        await message.answer(
+            "❌ Пароль можно вводить только в личном чате с ботом."
         )
+        return
+    if message.from_user is None:
+        raise RuntimeError("Telegram user is unavailable for this message")
+
+    state_data = await state.get_data()
+    mafile_id = state_data.get("mafile_id")
+    if (
+        type(mafile_id) is not int
+        or mafile_id <= 0
+        or mafile_id > _MAX_DATABASE_INTEGER
+    ):
+        await clear_user_workflows(message.from_user.id, state)
+        await message.answer("❌ Сессия устарела. Начните вход заново.")
+        return
+
+    password = (message.text or "").strip()
+    if not password:
+        await message.answer("❌ Пароль не может быть пустым. Попробуйте снова.")
+        return
+
+    async with AsyncSessionLocal() as session:
+        mafile = await get_owned_mafile(session, mafile_id, message.from_user.id)
+        if not mafile:
+            await clear_user_workflows(message.from_user.id, state)
+            await message.answer("❌ Аккаунт не найден")
+            return
+
+        mafile.password = encrypt_value(password)
+        await session.commit()
+        await clear_user_workflows(message.from_user.id, state)
+        await message.answer(
+            "✅ <b>Пароль сохранен!</b>\n\nПробую войти в аккаунт...",
+            parse_mode="HTML",
+        )
+        await perform_login_full(message, mafile, session)
+
+
+@dp.message(LoginPasswordFlow.waiting_password)
+async def reject_login_password_non_text(
+    message: Message,
+    state: FSMContext,
+) -> None:
+    """Prevent media from falling through while a password is expected."""
+    if not await delete_secret_message_or_abort(message):
+        return
+    if message.chat.type != ChatType.PRIVATE:
+        await message.answer(
+            "❌ Пароль можно вводить только в личном чате с ботом."
+        )
+        return
+    await message.answer("❌ Отправьте пароль текстом или используйте /cancel.")
 
 @dp.callback_query(F.data.startswith("try_refresh_"))
 @validated_callback_data(r"try_refresh_(?P<db_id>[1-9][0-9]{0,9})")

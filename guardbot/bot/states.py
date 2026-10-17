@@ -62,3 +62,9 @@ class BulkImportFlow(StatesGroup):
     """Collect bulk account credentials without persisting them in FSM."""
 
     waiting_credentials = State()
+
+
+class LoginPasswordFlow(StatesGroup):
+    """Collect a missing Steam password without persisting it in FSM."""
+
+    waiting_password = State()
