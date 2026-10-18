@@ -35,7 +35,6 @@ from guardbot.bot.runtime import (
     bot,
     dp,
     require_proxy,
-    set_legacy_user_state,
     user_states,
 )
 from guardbot.bot.states import (
@@ -61,6 +60,10 @@ import time
 _MAX_ACCOUNT_MAFILE_BYTES = 1_048_576
 _MAX_MAFILE_VALUE_LENGTH = 65_536
 _MAX_DATABASE_INTEGER = 2_147_483_647
+# Pending Steam login challenges accepted by SteamChallengeFlow.waiting_code:
+# manual_mobile - "enter code manually" button; email - code from Steam email;
+# mobile - password login on an account whose Guard keys the bot does not have.
+_STEAM_CHALLENGE_KINDS = frozenset({"manual_mobile", "email", "mobile"})
 _ACCOUNT_MAFILE_ENCRYPTED_FIELDS = (
     "shared_secret",
     "identity_secret",
@@ -1278,7 +1281,7 @@ async def callback_action_get_code(callback: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("action_login_"))
 @validated_callback_data(r"action_login_(?P<db_id>[1-9][0-9]{0,9})")
-async def callback_action_login(callback: CallbackQuery):
+async def callback_action_login(callback: CallbackQuery, state: FSMContext):
     """Вход в аккаунт по паролю (полный вход)"""
     mafile_id = int(callback.data.split("_")[2])
     telegram_id = callback.from_user.id
@@ -1332,20 +1335,45 @@ async def callback_action_login(callback: CallbackQuery):
 
         # Пароль есть - выполняем ПОЛНЫЙ вход
         await callback_feedback(callback, f"Вхожу в {mafile.account_name}...")
-        await perform_login_full(callback.message, mafile, session)
+        await perform_login_full(
+            callback.message,
+            mafile,
+            session,
+            telegram_id=telegram_id,
+            state=state,
+        )
 
-async def perform_login_full(message: Message, mafile: Mafile, db_session: AsyncSession):
-    """Полный вход по логину:паролю (без попытки refresh_token)"""
-    telegram_id = message.from_user.id
+async def perform_login_full(
+    message: Message,
+    mafile: Mafile,
+    db_session: AsyncSession,
+    *,
+    telegram_id: int,
+    state: FSMContext,
+):
+    """Полный вход по логину:паролю (без попытки refresh_token).
 
+    ``telegram_id`` is passed explicitly: for button-started logins ``message``
+    is the bot's own message, so ``message.from_user`` is the bot, not the user.
+    A pending email/mobile challenge is published to the typed FSM and the
+    pending-challenge registry; the live client never enters FSM storage.
+    """
     status_msg = await message.answer(
         f"🔄 <b>Выполняю вход в {escape(str(mafile.account_name))}...</b>",
         parse_mode="HTML"
     )
 
     client = await SteamSessionManager.create_steam_client_from_db(mafile, db_session)
-    client_transferred = False
-    pending_transfer_state = None
+    client_owned_by_handler = True
+    challenge_id: str | None = None
+
+    async def discard_published_challenge() -> None:
+        if challenge_id is not None:
+            await clear_owned_pending_challenge(
+                challenge_id,
+                state,
+                user_id=telegram_id,
+            )
 
     try:
         code_type = await client.login()
@@ -1366,7 +1394,7 @@ async def perform_login_full(message: Message, mafile: Mafile, db_session: Async
                     await db_session.flush()
                     logger.info(f"🌍 [{mafile.account_name}] Country detected: {country}")
             except Exception as e:
-                logger.warning(f"Could not detect country: {e}")
+                logger.warning("Could not detect country: %s", type(e).__name__)
 
             await SteamSessionManager.save_steam_session_to_db(db_session, mafile.id, client)
 
@@ -1394,171 +1422,138 @@ async def perform_login_full(message: Message, mafile: Mafile, db_session: Async
             )
             return
 
-        elif code_type == LoginConfirmType.email:
-            # Требуется код с почты
-            pending_transfer_state = {
-                "state": "waiting_email_code",
-                "account_name": mafile.account_name,
-                "client": client,
-                "mafile_id": mafile.id,
-            }
-            await set_legacy_user_state(telegram_id, pending_transfer_state)
-            client_transferred = True
+        if code_type == LoginConfirmType.mobile and mafile.shared_secret:
+            # Есть shared_secret — генерируем код сами
+            client.load_mobile({
+                'shared_secret': decrypt_value(mafile.shared_secret),
+                'device_id': decrypt_value(mafile.device_id) or generate_device_id(),
+                'identity_secret': decrypt_value(mafile.identity_secret),
+                'serial_number': decrypt_value(mafile.serial_number),
+                'revocation_code': decrypt_value(mafile.revocation_code),
+                'uri': decrypt_value(mafile.uri),
+                'token_gid': decrypt_value(mafile.token_gid),
+                'secret_1': decrypt_value(mafile.secret_1)
+            })
+            await client.align_time()
+            code = client.generate_steam_guard_code()
 
             await status_msg.edit_text(
-                f"📧 <b>Требуется код с EMAIL</b>\n\n"
-                f"Steam отправил код подтверждения на вашу почту.\n"
-                f"ℹ️ <i>На аккаунте НЕТ мобильного Steam Guard</i>\n\n"
-                f"<b>Введите код из письма:</b>\n\n"
-                f"💡 <i>После входа вы сможете подключить Steam Guard через бота!</i>",
-                parse_mode="HTML",
-                reply_markup=InlineKeyboardMarkup(
-                    inline_keyboard=[
-                        [InlineKeyboardButton(
-                            text="❌ Отмена",
-                            callback_data=f"account_detail_{mafile.id}"
-                        )]
-                    ]
-                )
+                f"📱 <b>Вхожу с использованием Steam Guard...</b>\n\n"
+                f"Сгенерирован код: <code>{code}</code>",
+                parse_mode="HTML"
             )
-            return
 
-        elif code_type == LoginConfirmType.mobile:
-            if mafile.shared_secret:
-                # Есть shared_secret — генерируем код сами
-                client.load_mobile({
-                    'shared_secret': decrypt_value(mafile.shared_secret),
-                    'device_id': decrypt_value(mafile.device_id) or generate_device_id(),
-                    'identity_secret': decrypt_value(mafile.identity_secret),
-                    'serial_number': decrypt_value(mafile.serial_number),
-                    'revocation_code': decrypt_value(mafile.revocation_code),
-                    'uri': decrypt_value(mafile.uri),
-                    'token_gid': decrypt_value(mafile.token_gid),
-                    'secret_1': decrypt_value(mafile.secret_1)
-                })
-                await client.align_time()
-                code = client.generate_steam_guard_code()
+            try:
+                await client.confirm_login(code)
+
+                # 🔥 Получаем страну сразу после входа
+                try:
+                    country = await client.get_account_country()
+                    if country:
+                        mafile.country = country
+                        for curr_id, info in STEAM_CURRENCIES.items():
+                            if info['country'] == country:
+                                mafile.currency_id = curr_id
+                                break
+                        await db_session.flush()
+                        logger.info(f"🌍 [{mafile.account_name}] Country detected: {country}")
+                except Exception as e:
+                    logger.warning("Could not detect country: %s", type(e).__name__)
+
+                await SteamSessionManager.save_steam_session_to_db(db_session, mafile.id, client)
 
                 await status_msg.edit_text(
-                    f"📱 <b>Вхожу с использованием Steam Guard...</b>\n\n"
-                    f"Сгенерирован код: <code>{code}</code>",
+                    f"✅ <b>Успешный вход!</b>\n"
+                    f"SteamID: <code>{client.steamid}</code>\n\n"
+                    f"🔐 Steam Guard активирован!\n"
+                    f"Используйте <code>/gc {escape(str(mafile.account_name))}</code> для получения кодов.",
                     parse_mode="HTML"
                 )
-
-                try:
-                    await client.confirm_login(code)
-
-                    # 🔥 Получаем страну сразу после входа
-                    try:
-                        country = await client.get_account_country()
-                        if country:
-                            mafile.country = country
-                            for curr_id, info in STEAM_CURRENCIES.items():
-                                if info['country'] == country:
-                                    mafile.currency_id = curr_id
-                                    break
-                            await db_session.flush()
-                            logger.info(f"🌍 [{mafile.account_name}] Country detected: {country}")
-                    except Exception as e:
-                        logger.warning(f"Could not detect country: {e}")
-
-                    await SteamSessionManager.save_steam_session_to_db(db_session, mafile.id, client)
-
-                    await status_msg.edit_text(
-                        f"✅ <b>Успешный вход!</b>\n"
-                        f"SteamID: <code>{client.steamid}</code>\n\n"
-                        f"🔐 Steam Guard активирован!\n"
-                        f"Используйте <code>/gc {escape(str(mafile.account_name))}</code> для получения кодов.",
-                        parse_mode="HTML"
-                    )
-                except InvalidSteamGuardCode:
-                    await status_msg.edit_text(
-                        f"❌ <b>Ошибка входа!</b>\n\n"
-                        f"Сгенерированный код <code>{code}</code> не подошел.\n"
-                        f"Возможна рассинхронизация времени.\n\n"
-                        f"Попробуйте:\n"
-                        f"• Синхронизировать время на ПК\n"
-                        f"• Перезапустить SDA (если используете)",
-                        parse_mode="HTML"
-                    )
-                return
-
-            else:
-                # Нет shared_secret — просим mafile или код вручную
-                pending_transfer_state = {
-                    "state": "waiting_steam_code_or_mafile",
-                    "account_name": mafile.account_name,
-                    "client": client,
-                    "mafile_id": mafile.id,
-                }
-                await set_legacy_user_state(telegram_id, pending_transfer_state)
-                client_transferred = True
-
+            except InvalidSteamGuardCode:
                 await status_msg.edit_text(
-                    f"⚠️ <b>На аккаунте уже подключен Steam Guard!</b>\n\n"
-                    f"У бота нет ключей для генерации кода.\n\n"
-                    f"<b>Выберите действие:</b>",
-                    parse_mode="HTML",
-                    reply_markup=InlineKeyboardMarkup(
-                        inline_keyboard=[
-                            [InlineKeyboardButton(
-                                text="📤 Импортировать mafile",
-                                callback_data=f"import_mafile_for_{mafile.id}"
-                            )],
-                            [InlineKeyboardButton(
-                                text="✏️ Ввести код вручную",
-                                callback_data=f"manual_code_{mafile.id}"
-                            )],
-                            [InlineKeyboardButton(
-                                text="❌ Отмена",
-                                callback_data=f"account_detail_{mafile.id}"
-                            )]
-                        ]
-                    )
+                    f"❌ <b>Ошибка входа!</b>\n\n"
+                    f"Сгенерированный код <code>{code}</code> не подошел.\n"
+                    f"Возможна рассинхронизация времени.\n\n"
+                    f"Попробуйте:\n"
+                    f"• Синхронизировать время на ПК\n"
+                    f"• Перезапустить SDA (если используете)",
+                    parse_mode="HTML"
                 )
-                return
+            return
+
+        if code_type == LoginConfirmType.email:
+            kind = "email"
+            prompt = (
+                "📧 <b>Требуется код с EMAIL</b>\n\n"
+                "Steam отправил код подтверждения на вашу почту.\n"
+                "ℹ️ <i>На аккаунте НЕТ мобильного Steam Guard</i>\n\n"
+                "<b>Введите код из письма:</b>\n\n"
+                "💡 <i>После входа вы сможете подключить Steam Guard через бота!</i>"
+            )
+            keyboard = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(
+                        text="❌ Отмена",
+                        callback_data=f"account_detail_{mafile.id}"
+                    )]
+                ]
+            )
+        elif code_type == LoginConfirmType.mobile:
+            # Нет shared_secret — ждём код из приложения или импорт maFile
+            kind = "mobile"
+            prompt = (
+                "⚠️ <b>На аккаунте уже подключен Steam Guard!</b>\n\n"
+                "У бота нет ключей для генерации кода.\n\n"
+                "<b>Отправьте код из приложения Steam Guard / SDA</b> "
+                "или импортируйте maFile, чтобы бот генерировал коды сам."
+            )
+            keyboard = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(
+                        text="📤 Импортировать mafile",
+                        callback_data=f"import_mafile_for_{mafile.id}"
+                    )],
+                    [InlineKeyboardButton(
+                        text="❌ Отмена",
+                        callback_data=f"account_detail_{mafile.id}"
+                    )]
+                ]
+            )
+        else:
+            raise RuntimeError("Unsupported Steam login confirmation type")
+
+        # publish_pending_challenge owns the client from here on: it closes it
+        # on any failure, including cancellation while queued for the lock.
+        client_owned_by_handler = False
+        challenge_id = await publish_pending_challenge(
+            user_id=telegram_id,
+            mafile_id=mafile.id,
+            kind=kind,
+            client=client,
+            state=state,
+            fsm_state=SteamChallengeFlow.waiting_code,
+        )
+        await status_msg.edit_text(prompt, parse_mode="HTML", reply_markup=keyboard)
 
     except (TelegramAPIError, asyncio.CancelledError):
-        if (
-            pending_transfer_state is not None
-            and user_states.get(telegram_id) is pending_transfer_state
-        ):
-            await clear_legacy_user_state(
-                telegram_id,
-                expected_state=pending_transfer_state,
-            )
-            client_transferred = True
-        elif client_transferred and pending_transfer_state is not None:
-            await clear_legacy_user_state(
-                telegram_id,
-                expected_state=pending_transfer_state,
-            )
+        await discard_published_challenge()
         raise
     except InvalidCredentials:
+        await discard_published_challenge()
         await status_msg.edit_text("❌ <b>Неверный логин или пароль</b>", parse_mode="HTML")
-    except Exception as e:
-        if (
-            pending_transfer_state is not None
-            and user_states.get(telegram_id) is pending_transfer_state
-        ):
-            await clear_legacy_user_state(
-                telegram_id,
-                expected_state=pending_transfer_state,
-            )
-            client_transferred = True
-        elif client_transferred and pending_transfer_state is not None:
-            await clear_legacy_user_state(
-                telegram_id,
-                expected_state=pending_transfer_state,
-            )
-        await status_msg.edit_text(f"❌ Ошибка при входе: {str(e)}")
-        logger.error(f"Login error for {mafile.account_name}: {e}", exc_info=True)
+    except Exception:
+        await discard_published_challenge()
+        logger.exception("Steam login failed for user_id=%s", telegram_id)
+        await status_msg.edit_text(
+            "❌ Не удалось выполнить вход в Steam. Проверьте прокси и попробуйте позже."
+        )
     finally:
-        if not client_transferred:
+        if client_owned_by_handler:
             try:
                 await close_owned_resource(client)
             except Exception:
-                pass
+                logger.warning("Failed to close Steam login client for user_id=%s", telegram_id)
+
 
 @dp.callback_query(F.data.startswith("enter_password_"))
 @validated_callback_data(r"enter_password_(?P<db_id>[1-9][0-9]{0,9})")
@@ -1643,7 +1638,13 @@ async def receive_login_password(message: Message, state: FSMContext) -> None:
             "✅ <b>Пароль сохранен!</b>\n\nПробую войти в аккаунт...",
             parse_mode="HTML",
         )
-        await perform_login_full(message, mafile, session)
+        await perform_login_full(
+            message,
+            mafile,
+            session,
+            telegram_id=message.from_user.id,
+            state=state,
+        )
 
 
 @dp.message(LoginPasswordFlow.waiting_password)
@@ -1902,7 +1903,7 @@ async def callback_manual_code(callback: CallbackQuery, state: FSMContext):
     NonCommandInputFilter(),
 )
 async def receive_manual_steam_code(message: Message, state: FSMContext) -> None:
-    """Consume a manual Steam Guard code without persisting the secret."""
+    """Consume a Steam login code (app, SDA or email) without persisting it."""
     if message.chat.type != ChatType.PRIVATE or message.from_user is None:
         return
 
@@ -1933,7 +1934,12 @@ async def receive_manual_steam_code(message: Message, state: FSMContext) -> None
         type(mafile_id) is int
         and 0 < mafile_id <= 2_147_483_647
     )
-    if not valid_challenge_id or not valid_mafile_id or kind != "manual_mobile":
+    if (
+        not valid_challenge_id
+        or not valid_mafile_id
+        or not isinstance(kind, str)
+        or kind not in _STEAM_CHALLENGE_KINDS
+    ):
         if challenge_snapshot is not None:
             await clear_owned_pending_challenge(
                 challenge_snapshot,
@@ -1946,6 +1952,7 @@ async def receive_manual_steam_code(message: Message, state: FSMContext) -> None
         return
     challenge_id = cast(str, challenge_id)
     mafile_id = cast(int, mafile_id)
+    kind = cast(str, kind)
 
     code = message.text
     if not code or len(code) > 64 or not code.isascii():
@@ -1965,7 +1972,7 @@ async def receive_manual_steam_code(message: Message, state: FSMContext) -> None
             challenge_id,
             user_id=user_id,
             mafile_id=mafile_id,
-            kind="manual_mobile",
+            kind=kind,
         )
     except BaseException:
         # The lease was never granted to this handler. If another handler owns
@@ -2039,7 +2046,26 @@ async def receive_manual_steam_code(message: Message, state: FSMContext) -> None
             user_id=user_id,
             expected_entry=challenge,
         )
-        if has_shared_secret:
+        if kind == "email":
+            await status_message.edit_text(
+                "✅ <b>Вход выполнен успешно!</b>\n\n"
+                "⚠️ <b>Рекомендуется подключить мобильный Steam Guard</b>\n"
+                "Это повысит безопасность и позволит боту генерировать коды.",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [InlineKeyboardButton(
+                            text="🔐 Подключить Steam Guard",
+                            callback_data=f"setup_steamguard_{mafile_id}",
+                        )],
+                        [InlineKeyboardButton(
+                            text="📋 К аккаунту",
+                            callback_data=f"account_detail_{mafile_id}",
+                        )],
+                    ]
+                ),
+            )
+        elif has_shared_secret:
             await status_message.edit_text(
                 "✅ <b>Вход выполнен успешно!</b>\n\n"
                 "🔐 Секрет Steam Guard сохранён. Теперь коды можно получать в боте.",
@@ -2110,6 +2136,25 @@ async def receive_manual_steam_code(message: Message, state: FSMContext) -> None
         await status_message.edit_text(
             "❌ Не удалось подтвердить код. Начните вход заново."
         )
+
+
+@dp.message(SteamChallengeFlow.waiting_code, F.document)
+async def reject_challenge_document(message: Message, state: FSMContext) -> None:
+    """A file sent at the code prompt may be a maFile: delete it, keep the challenge.
+
+    maFile import has a single hardened path (the "Import mafile" button) with
+    size limits and strict validation; this prompt only accepts the code text.
+    """
+    if message.chat.type != ChatType.PRIVATE or message.from_user is None:
+        return
+    if not await delete_secret_message_or_abort(message):
+        return
+    await message.answer(
+        "🔐 Файл удалён из чата и не обработан.\n\n"
+        "Сейчас бот ждёт код подтверждения — отправьте его обычным сообщением.\n"
+        "Чтобы загрузить maFile, нажмите «📤 Импортировать mafile» под запросом "
+        "кода или в карточке аккаунта."
+    )
 
 
 @dp.callback_query(F.data.startswith("import_mafile_for_"))
@@ -2941,7 +2986,12 @@ async def callback_refresh_code(callback: CallbackQuery):
 @dp.message(Command("login"))
 @dp.message(Command("signin"))
 @require_proxy
-async def cmd_login(message: Message, command: CommandObject, **kwargs):  # добавить **kwargs
+async def cmd_login(
+    message: Message,
+    command: CommandObject,
+    state: FSMContext | None = None,
+    **kwargs,
+):
     args = command.args.split() if command.args else []
     telegram_id = message.from_user.id
 
@@ -2980,7 +3030,15 @@ async def cmd_login(message: Message, command: CommandObject, **kwargs):  # до
             await message.answer(f"❌ Аккаунт <b>{escape(str(account_input))}</b> не найден", parse_mode="HTML")
             return
 
-        await perform_login_full(message, mafile, session)
+        if state is None:
+            raise RuntimeError("FSM context is required for Steam login")
+        await perform_login_full(
+            message,
+            mafile,
+            session,
+            telegram_id=telegram_id,
+            state=state,
+        )
 
 
 @dp.message(Command("check_tokens"))

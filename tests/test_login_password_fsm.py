@@ -239,7 +239,7 @@ def test_valid_login_password_is_encrypted_then_flow_clears_before_login(
         events.append("ownership")
         return mafile
 
-    async def login(_message, received_mafile, _session) -> None:
+    async def login(_message, received_mafile, _session, **_kwargs) -> None:
         assert received_mafile is mafile
         assert state.state is None
         assert state.data == {}
@@ -470,7 +470,7 @@ def test_dispatcher_routes_private_login_password_through_typed_fsm(
         assert (mafile_id, owner_id) == (42, user_id)
         return mafile
 
-    async def login(_message, received_mafile, received_session) -> None:
+    async def login(_message, received_mafile, received_session, **_kwargs) -> None:
         assert received_mafile is mafile
         assert received_session is domain_session
         login_calls.append(True)

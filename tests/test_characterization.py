@@ -38,6 +38,6 @@ def test_steam_price_calculation_preserves_rounding_and_minimum_commission() -> 
 
 
 def test_handler_registration_is_not_lost() -> None:
-    assert len(tgbot.dp.message.handlers) == 93
+    assert len(tgbot.dp.message.handlers) == 94
     assert len(tgbot.dp.callback_query.handlers) == 77
     assert len(tgbot.dp.inline_query.handlers) == 1

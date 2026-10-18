@@ -231,50 +231,6 @@ def test_proxy_credentials_are_rejected_and_deleted_outside_private_chat(
     asyncio.run(scenario())
 
 
-def test_invalid_steam_guard_code_keeps_login_state_retryable() -> None:
-    from guardbot.bot.handlers import bulk_import
-
-    class Client:
-        def __init__(self) -> None:
-            self.closed = False
-
-        async def confirm_login(self, code: str) -> None:
-            raise bulk_import.InvalidSteamGuardCode()
-
-        async def close(self) -> None:
-            self.closed = True
-
-    class Message:
-        from_user = SimpleNamespace(id=987)
-        chat = SimpleNamespace(type="private")
-        text = "ABCDE"
-
-        async def delete(self) -> None:
-            return None
-
-        async def answer(self, text, **kwargs):
-            return SimpleNamespace()
-
-    async def scenario() -> None:
-        client = Client()
-        state_data = {
-            "state": "waiting_steam_code",
-            "account_name": "test-account",
-            "client": client,
-            "mafile_id": 123,
-            "db_session": object(),
-        }
-        bulk_import.user_states[987] = state_data
-        try:
-            await bulk_import.process_steam_code(Message(), state_data, 987)
-            assert bulk_import.user_states[987] is state_data
-            assert client.closed is False
-        finally:
-            bulk_import.user_states.pop(987, None)
-
-    asyncio.run(scenario())
-
-
 async def _async_result(value):
     return value
 
@@ -401,7 +357,7 @@ def test_action_login_acknowledges_before_missing_password_prompt(monkeypatch) -
     async def scenario() -> None:
         callback = Callback()
         try:
-            await accounts.callback_action_login(callback)
+            await accounts.callback_action_login(callback, SimpleNamespace())
         except TelegramBadRequest:
             pass
         assert callback.answer_calls == 1
@@ -443,9 +399,9 @@ def test_login_command_is_rejected_before_proxy_lookup_outside_private_chat(
 
 
 def test_password_login_handoff_preserves_new_challenge_state(monkeypatch) -> None:
-    from guardbot.bot import runtime
+    from guardbot.bot import pending_challenges
     from guardbot.bot.handlers import accounts
-    from guardbot.bot.states import LoginPasswordFlow
+    from guardbot.bot.states import LoginPasswordFlow, SteamChallengeFlow
 
     class Session:
         async def commit(self) -> None:
@@ -481,22 +437,37 @@ def test_password_login_handoff_preserves_new_challenge_state(monkeypatch) -> No
 
     class State:
         def __init__(self) -> None:
-            self.state = LoginPasswordFlow.waiting_password.state
+            self.raw_state = LoginPasswordFlow.waiting_password.state
             self.data = {"mafile_id": 1}
+
+        async def set_state(self, value) -> None:
+            self.raw_state = getattr(value, "state", value)
+
+        async def set_data(self, value) -> None:
+            self.data = dict(value)
+
+        async def get_state(self):
+            return self.raw_state
 
         async def get_data(self):
             return dict(self.data)
 
         async def clear(self) -> None:
-            self.state = None
+            self.raw_state = None
             self.data = {}
 
-    async def perform_login(*args, **kwargs) -> None:
-        runtime.user_states[987] = {
-            "state": "waiting_email_code",
-            "client": client,
-            "mafile_id": 1,
-        }
+    async def perform_login(_message, _mafile, _session, *, telegram_id, state) -> None:
+        # The real login publishes an email challenge after the password flow
+        # was cleared; nothing in the password handler may undo it afterwards.
+        assert await state.get_state() is None
+        await pending_challenges.publish_pending_challenge(
+            user_id=telegram_id,
+            mafile_id=1,
+            kind="email",
+            client=client,
+            state=state,
+            fsm_state=SteamChallengeFlow.waiting_code,
+        )
 
     monkeypatch.setattr(accounts, "AsyncSessionLocal", SessionContext)
     monkeypatch.setattr(
@@ -508,12 +479,15 @@ def test_password_login_handoff_preserves_new_challenge_state(monkeypatch) -> No
     monkeypatch.setattr(accounts, "perform_login_full", perform_login)
 
     async def scenario() -> None:
+        state = State()
         try:
-            await accounts.receive_login_password(Message(), State())
-            assert runtime.user_states[987]["state"] == "waiting_email_code"
+            await accounts.receive_login_password(Message(), state)
+            assert await state.get_state() == SteamChallengeFlow.waiting_code.state
+            assert (await state.get_data())["kind"] == "email"
+            assert pending_challenges.current_pending_challenge_token(987) is not None
             assert client.closed is False
         finally:
-            await runtime.clear_legacy_user_state(987)
+            await pending_challenges.clear_pending_challenges_for_user(987, state)
 
     asyncio.run(scenario())
 
@@ -574,7 +548,13 @@ def test_login_completion_edit_failure_closes_untransferred_client(monkeypatch) 
 
     async def scenario() -> None:
         try:
-            await accounts.perform_login_full(Message(), mafile, Session())
+            await accounts.perform_login_full(
+                Message(),
+                mafile,
+                Session(),
+                telegram_id=987,
+                state=SimpleNamespace(),
+            )
         except TelegramBadRequest:
             pass
         assert client.close_calls == 1
@@ -612,16 +592,48 @@ def test_non_telegram_challenge_prompt_failure_rolls_back_client_state(monkeypat
             return StatusMessage()
 
     client = Client()
-    mafile = SimpleNamespace(id=1, account_name="account")
+    mafile = SimpleNamespace(id=1, account_name="account", shared_secret=None)
     monkeypatch.setattr(
         accounts.SteamSessionManager,
         "create_steam_client_from_db",
         lambda *args, **kwargs: _async_result(client),
     )
 
+    class State:
+        def __init__(self) -> None:
+            self.raw_state = None
+            self.data = {}
+
+        async def set_state(self, value) -> None:
+            self.raw_state = getattr(value, "state", value)
+
+        async def set_data(self, value) -> None:
+            self.data = dict(value)
+
+        async def get_state(self):
+            return self.raw_state
+
+        async def get_data(self):
+            return dict(self.data)
+
+        async def clear(self) -> None:
+            self.raw_state = None
+            self.data = {}
+
     async def scenario() -> None:
-        await accounts.perform_login_full(Message(), mafile, SimpleNamespace())
+        from guardbot.bot import pending_challenges
+
+        state = State()
+        await accounts.perform_login_full(
+            Message(),
+            mafile,
+            SimpleNamespace(),
+            telegram_id=988,
+            state=state,
+        )
         assert 988 not in runtime.user_states
+        assert pending_challenges.current_pending_challenge_token(988) is None
+        assert await state.get_state() is None
         assert client.close_calls == 1
 
     asyncio.run(scenario())
@@ -1150,6 +1162,8 @@ def test_perform_login_full_close_resists_repeated_cancellation(monkeypatch) -> 
                 Message(),
                 SimpleNamespace(id=1, account_name="account"),
                 SimpleNamespace(),
+                telegram_id=992,
+                state=SimpleNamespace(),
             )
         )
         await client.close_started.wait()
