@@ -851,6 +851,8 @@ def test_successful_single_mafile_import_clears_terminal_state(monkeypatch) -> N
             status_edits.append((text, kwargs))
 
     class Message:
+        chat = SimpleNamespace(type="private")
+        from_user = SimpleNamespace(id=991)
         document = SimpleNamespace(
             file_name="account.mafile",
             file_size=100,
@@ -862,6 +864,15 @@ def test_successful_single_mafile_import_clears_terminal_state(monkeypatch) -> N
 
         async def answer(self, *args, **kwargs):
             return StatusMessage()
+
+    class State:
+        raw_state = "NewMaFileImportFlow:waiting_document"
+
+        async def get_state(self):
+            return self.raw_state
+
+        async def clear(self) -> None:
+            self.raw_state = None
 
     async def get_file(file_id):
         return SimpleNamespace(file_path="file-path")
@@ -881,9 +892,10 @@ def test_successful_single_mafile_import_clears_terminal_state(monkeypatch) -> N
     )
 
     async def scenario() -> None:
-        runtime.user_states[991] = {"state": "waiting_mafile"}
-        await imports.process_single_mafile(Message(), 991)
+        state = State()
+        await imports.receive_new_mafile(Message(), state)
         assert 991 not in runtime.user_states
+        assert state.raw_state is None
         confirmation = status_edits[-1][0]
         assert 'x&lt;/b&gt;&lt;a href=&quot;https://example.invalid/&quot;&gt;' in confirmation
         assert '<a href="https://example.invalid/">' not in confirmation

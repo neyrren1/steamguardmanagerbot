@@ -7,7 +7,6 @@ from guardbot.bot.handlers.bulk_import import (
     process_txt_accounts,
     process_zip_archive,
 )
-from guardbot.bot.handlers.imports import process_single_mafile
 from guardbot.bot.runtime import (
     dp,
     user_states,
@@ -63,12 +62,6 @@ async def handle_messages(message: Message):
         if file_name_lower.endswith('.txt'):
             await process_txt_accounts(message, user_id)
             return
-
-        # Потом одиночный mafile/json
-        if file_name_lower.endswith('.mafile') or file_name_lower.endswith('.json'):
-            await process_single_mafile(message, user_id)
-            return
-
 
     # ========== НЕТ АКТИВНОГО СОСТОЯНИЯ ==========
     else:

@@ -1,25 +1,52 @@
 """Extracted from the legacy bot module without behavior changes."""
 
+from collections.abc import Buffer
 from html import escape
 
 from aiogram.enums import ChatType
 from aiogram.exceptions import TelegramAPIError
-from aiogram.filters import Command, CommandObject
+from aiogram import F
+from aiogram.filters import Command, CommandObject, Filter
+from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 from datetime import UTC, datetime
 from guardbot.bot.runtime import (
     bot,
-    clear_legacy_user_state,
+    clear_user_workflows,
+    delete_secret_message_or_abort,
     dp,
-    set_legacy_user_state,
 )
-from guardbot.config import MAX_FILE_SIZE, logger
+from guardbot.bot.states import NewMaFileImportFlow
+from guardbot.config import logger
 from guardbot.database import AsyncSessionLocal, Mafile, User
 from guardbot.security import decrypt_value, encrypt_value
 from guardbot.steam.client import parse_proxy_string, redact_proxy_url
 from sqlalchemy import func, select, text
+from sqlalchemy.exc import IntegrityError
 import io
 import json
+
+_MAX_NEW_MAFILE_BYTES = 1_048_576
+_MAX_MAFILE_VALUE_LENGTH = 65_536
+_MAX_ACCOUNT_NAME_LENGTH = 255
+_NEW_MAFILE_ENCRYPTED_FIELDS = (
+    "shared_secret",
+    "identity_secret",
+    "secret_1",
+    "device_id",
+    "serial_number",
+    "revocation_code",
+    "token_gid",
+    "uri",
+)
+
+
+class NonCommandInputFilter(Filter):
+    """Let slash commands continue to the registered command handlers."""
+
+    async def __call__(self, message: Message) -> bool:
+        content = message.text or message.caption or ""
+        return not content.startswith("/")
 
 # ==================== ИМПОРТ СУЩЕСТВУЮЩИХ MAFILES ====================
 # ДОБАВИТЬ В ФАЙЛ ПОСЛЕ ВСЕХ КОМАНД
@@ -39,190 +66,270 @@ async def _prepare_secret_command(message: Message) -> bool:
     return False
 
 @dp.message(Command("import_mafile"))
-async def cmd_import_mafile(message: Message):
+async def cmd_import_mafile(message: Message, state: FSMContext):
     """
     Импорт существующего .mafile файла
     Отправьте файл после этой команды
     """
     if not await _prepare_secret_command(message):
         return
+    if message.from_user is None:
+        raise RuntimeError("Import command has no user")
+    user_id = message.from_user.id
 
-    await set_legacy_user_state(
-        message.from_user.id,
-        {"state": "waiting_mafile"},
-    )
-
-    await message.answer(
-        "📤 <b>ИМПОРТ MAFILE</b>\n\n"
-        "Отправьте мне файл <b>.mafile</b> с данными Steam Guard.\n\n"
-        "<b>Где взять .mafile?</b>\n"
-        "• Из Steam Desktop Authenticator (SDA)\n"
-        "• Из мобильного Steam (нужно извлечь)\n"
-        "• Из других программ для Steam Guard\n\n"
-        "<b>Формат файла должен быть JSON с полями:</b>\n"
-        "• <code>account_name</code> - логин\n"
-        "• <code>shared_secret</code> - секрет для кодов\n"
-        "• <code>identity_secret</code> - секрет для подтверждений\n"
-        "• <code>device_id</code> - ID устройства\n"
-        "• <code>serial_number</code> - серийный номер\n"
-        "• <code>revocation_code</code> - код восстановления\n\n"
-        "Отправьте файл прямо в чат.",
-        parse_mode="HTML"
-    )
-
-async def process_single_mafile(message: Message, user_id: int):
-    """Обработка одного mafile файла"""
-    document = message.document
-    file_name = document.file_name
-
-    # 🔥 Защита: эскейпим имя файла для HTML
-    safe_file_name = file_name.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')
-
-    # 🔥 Защита: проверка размера файла
-    if document.file_size and document.file_size > MAX_FILE_SIZE:
+    try:
+        await clear_user_workflows(user_id, state)
+        await state.set_state(NewMaFileImportFlow.waiting_document)
+        await state.set_data({})
         await message.answer(
-            f"❌ <b>Файл слишком большой!</b>\n"
-            f"Максимальный размер: <code>{MAX_FILE_SIZE // (1024*1024)} MB</code>",
-            parse_mode="HTML"
+            "📤 <b>ИМПОРТ MAFILE</b>\n\n"
+            "Отправьте мне файл <b>.mafile</b> с данными Steam Guard.\n\n"
+            "<b>Где взять .mafile?</b>\n"
+            "• Из Steam Desktop Authenticator (SDA)\n"
+            "• Из мобильного Steam (нужно извлечь)\n"
+            "• Из других программ для Steam Guard\n\n"
+            "<b>Формат файла должен быть JSON с полями:</b>\n"
+            "• <code>account_name</code> - логин\n"
+            "• <code>shared_secret</code> - секрет для кодов\n"
+            "• <code>identity_secret</code> - секрет для подтверждений\n"
+            "• <code>device_id</code> - ID устройства\n"
+            "• <code>serial_number</code> - серийный номер\n"
+            "• <code>revocation_code</code> - код восстановления\n\n"
+            "Отправьте файл прямо в чат.",
+            parse_mode="HTML",
         )
-        try:
-            await message.delete()
-        except:
-            pass
+    except BaseException:
+        await clear_user_workflows(user_id, state)
+        raise
+
+
+class _BoundedMaFileBuffer(io.BytesIO):
+    def write(self, data: Buffer) -> int:
+        if self.tell() + memoryview(data).nbytes > _MAX_NEW_MAFILE_BYTES:
+            raise ValueError("maFile exceeds download limit")
+        return super().write(data)
+
+
+def _bounded_new_mafile_string(
+    payload: dict,
+    key: str,
+    *,
+    required: bool = False,
+    max_length: int = _MAX_MAFILE_VALUE_LENGTH,
+) -> str | None:
+    value = payload.get(key)
+    if value is None:
+        if required:
+            raise ValueError(f"missing {key}")
+        return None
+    if (
+        not isinstance(value, str)
+        or (required and not value)
+        or len(value) > max_length
+        or "\x00" in value
+    ):
+        raise ValueError(f"invalid {key}")
+    try:
+        value.encode("utf-8", errors="strict")
+    except UnicodeEncodeError as exc:
+        raise ValueError(f"invalid {key}") from exc
+    return value
+
+
+def _bounded_steamid(value: object) -> int | None:
+    if value is None:
+        return None
+    if type(value) is int:
+        steamid = value
+    elif (
+        isinstance(value, str)
+        and value.isascii()
+        and value.isdecimal()
+        and len(value) <= 20
+    ):
+        steamid = int(value)
+    else:
+        raise ValueError("invalid SteamID")
+    if steamid <= 0 or steamid > 9_223_372_036_854_775_807:
+        raise ValueError("invalid SteamID")
+    return steamid
+
+
+def _validated_new_mafile(payload: bytes) -> tuple[dict[str, str | None], dict]:
+    if not payload or len(payload) > _MAX_NEW_MAFILE_BYTES:
+        raise ValueError("invalid file size")
+    try:
+        raw = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("invalid JSON") from exc
+    if not isinstance(raw, dict):
+        raise ValueError("maFile root must be an object")
+
+    values = {
+        key: _bounded_new_mafile_string(
+            raw,
+            key,
+            required=key == "shared_secret",
+        )
+        for key in _NEW_MAFILE_ENCRYPTED_FIELDS
+    }
+    values["account_name"] = _bounded_new_mafile_string(
+        raw,
+        "account_name",
+        required=True,
+        max_length=_MAX_ACCOUNT_NAME_LENGTH,
+    )
+
+    session_raw = raw.get("Session")
+    if session_raw is None:
+        session_raw = {}
+    if not isinstance(session_raw, dict):
+        raise ValueError("invalid Session")
+    session_steamid = session_raw.get("SteamID")
+    session_values = {
+        "present": "Session" in raw,
+        "access_token": _bounded_new_mafile_string(session_raw, "AccessToken"),
+        "refresh_token": _bounded_new_mafile_string(session_raw, "RefreshToken"),
+        "steamid": _bounded_steamid(
+            session_steamid if session_steamid is not None else raw.get("steamid")
+        ),
+    }
+    return values, session_values
+
+
+@dp.message(
+    NewMaFileImportFlow.waiting_document,
+    F.document,
+    NonCommandInputFilter(),
+)
+async def receive_new_mafile(message: Message, state: FSMContext) -> None:
+    """Create or update an account from a locally validated maFile."""
+    if message.chat.type != ChatType.PRIVATE:
+        return
+    if not await delete_secret_message_or_abort(message):
+        return
+    if message.from_user is None:
         return
 
-    # 🔥 Удаляем сообщение с файлом
+    document = message.document
+    if document is None:
+        return
+    file_name = (document.file_name or "").lower()
+    if not file_name.endswith((".mafile", ".json")):
+        await message.answer("❌ Файл должен иметь расширение .mafile или .json.")
+        return
+    if (
+        type(document.file_size) is not int
+        or document.file_size <= 0
+        or document.file_size > _MAX_NEW_MAFILE_BYTES
+    ):
+        await message.answer("❌ Файл maFile пустой или превышает лимит 1 МБ.")
+        return
+
+    user_id = message.from_user.id
+    status_message = await message.answer("🔄 Обрабатываю файл...")
     try:
-        await message.delete()
-    except:
-        pass
+        telegram_file = await bot.get_file(document.file_id)
+        if not telegram_file.file_path:
+            raise ValueError("missing Telegram file path")
+        buffer = _BoundedMaFileBuffer()
+        await bot.download_file(telegram_file.file_path, buffer)
+        values, session_values = _validated_new_mafile(buffer.getvalue())
+    except ValueError:
+        await status_message.edit_text(
+            "❌ maFile повреждён, слишком большой или содержит некорректные поля. "
+            "Отправьте исправленный файл."
+        )
+        return
+    except Exception:
+        logger.exception("Failed to download new-account maFile for user %s", user_id)
+        await status_message.edit_text(
+            "❌ Не удалось безопасно прочитать файл. Попробуйте ещё раз."
+        )
+        return
 
-    status_msg = await message.answer(f"🔄 Обрабатываю {safe_file_name}...")
-    import_persisted = False
+    account_name = values["account_name"]
+    if not isinstance(account_name, str):
+        raise RuntimeError("validated account name is missing")
 
-    try:
-        # Скачиваем файл
-        file_id = document.file_id
-        file = await bot.get_file(file_id)
-        file_path = file.file_path
-
-        import io
-        file_bytes = io.BytesIO()
-        await bot.download_file(file_path, file_bytes)
-        file_bytes.seek(0)
-
-        # Читаем JSON
-        try:
-            file_content = file_bytes.read().decode('utf-8')
-            mafile_data = json.loads(file_content)
-        except UnicodeDecodeError:
-            file_bytes.seek(0)
-            file_content = file_bytes.read().decode('cp1251')
-            mafile_data = json.loads(file_content)
-
-        account_name = mafile_data.get('account_name')
-        shared_secret = mafile_data.get('shared_secret')
-
-        if not account_name:
-            await status_msg.edit_text(f"❌ В файле {safe_file_name} не указан account_name")
-            return
-
-        if not shared_secret:
-            await status_msg.edit_text(f"❌ В файле {safe_file_name} отсутствует shared_secret")
-            return
-        safe_account_name = escape(str(account_name))
-
-        async with AsyncSessionLocal() as session:
-            stmt = select(Mafile).where(
+    created = False
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(Mafile).where(
                 Mafile.telegram_id == user_id,
-                Mafile.account_name == account_name
+                Mafile.account_name == account_name,
             )
-            result = await session.execute(stmt)
-            existing = result.scalar_one_or_none()
-
-            if existing:
-                # Обновляем существующий (шифруем все чувствительные поля)
-                existing.shared_secret = encrypt_value(shared_secret)
-                existing.identity_secret = encrypt_value(mafile_data.get('identity_secret'))
-                existing.secret_1 = encrypt_value(mafile_data.get('secret_1'))
-                existing.device_id = encrypt_value(mafile_data.get('device_id'))
-                existing.serial_number = encrypt_value(mafile_data.get('serial_number'))
-                existing.revocation_code = encrypt_value(mafile_data.get('revocation_code'))
-                existing.token_gid = encrypt_value(mafile_data.get('token_gid'))
-                existing.uri = encrypt_value(mafile_data.get('uri'))
-                existing.fully_enrolled = True
-                existing.updated_at = datetime.now(UTC).replace(tzinfo=None)
-
-                if 'Session' in mafile_data:
-                    existing.access_token = encrypt_value(mafile_data['Session'].get('AccessToken'))
-                    existing.refresh_token = encrypt_value(mafile_data['Session'].get('RefreshToken'))
-                    if mafile_data['Session'].get('SteamID'):
-                        existing.steamid = int(mafile_data['Session']['SteamID'])
-
-                await session.commit()
-                import_persisted = True
-
-                await status_msg.edit_text(
-                    f"✅ <b>{safe_account_name}</b> обновлен!\n"
-                    f"Steam Guard импортирован.",
-                    parse_mode="HTML"
+        )
+        mafile = result.scalar_one_or_none()
+        if mafile is None:
+            conflict_result = await session.execute(
+                select(Mafile).where(Mafile.account_name == account_name)
+            )
+            if conflict_result.scalar_one_or_none() is not None:
+                await status_message.edit_text(
+                    "❌ Не удалось импортировать аккаунт. "
+                    "Проверьте имя и повторите попытку."
                 )
-            else:
-                # Создаем новый аккаунт (шифруем все чувствительные поля)
-                steamid = None
-                if 'Session' in mafile_data and mafile_data['Session'].get('SteamID'):
-                    steamid = int(mafile_data['Session']['SteamID'])
-                elif 'steamid' in mafile_data:
-                    try:
-                        steamid = int(mafile_data['steamid'])
-                    except:
-                        pass
+                return
+            order_result = await session.execute(
+                select(func.max(Mafile.sort_order)).where(Mafile.telegram_id == user_id)
+            )
+            max_order = order_result.scalar() or 0
+            mafile = Mafile(
+                telegram_id=user_id,
+                account_name=account_name,
+                password=encrypt_value(""),
+                steamid=session_values["steamid"],
+                fully_enrolled=True,
+                unique_proxy=False,
+                sort_order=max_order + 1,
+                **{
+                    field_name: encrypt_value(values[field_name])
+                    for field_name in _NEW_MAFILE_ENCRYPTED_FIELDS
+                },
+            )
+            session.add(mafile)
+            created = True
+        else:
+            for field_name in _NEW_MAFILE_ENCRYPTED_FIELDS:
+                setattr(mafile, field_name, encrypt_value(values[field_name]))
+            mafile.fully_enrolled = True
+            mafile.updated_at = datetime.now(UTC).replace(tzinfo=None)
+            if session_values["steamid"] is not None:
+                mafile.steamid = session_values["steamid"]
 
-                # Получаем максимальный sort_order
-                stmt = select(func.max(Mafile.sort_order)).where(Mafile.telegram_id == user_id)
-                result = await session.execute(stmt)
-                max_order = result.scalar() or 0
+        if session_values["present"]:
+            mafile.access_token = encrypt_value(session_values["access_token"])
+            mafile.refresh_token = encrypt_value(session_values["refresh_token"])
+        try:
+            await session.commit()
+        except IntegrityError:
+            await session.rollback()
+            await status_message.edit_text(
+                "❌ Не удалось импортировать аккаунт. "
+                "Проверьте имя и повторите попытку."
+            )
+            return
 
-                mafile = Mafile(
-                    telegram_id=user_id,
-                    account_name=account_name,
-                    password=encrypt_value(""),
-                    shared_secret=encrypt_value(shared_secret),
-                    identity_secret=encrypt_value(mafile_data.get('identity_secret')),
-                    secret_1=encrypt_value(mafile_data.get('secret_1')),
-                    device_id=encrypt_value(mafile_data.get('device_id')),
-                    serial_number=encrypt_value(mafile_data.get('serial_number')),
-                    revocation_code=encrypt_value(mafile_data.get('revocation_code')),
-                    token_gid=encrypt_value(mafile_data.get('token_gid')),
-                    uri=encrypt_value(mafile_data.get('uri')),
-                    steamid=steamid,
-                    fully_enrolled=True,
-                    unique_proxy=False,
-                    sort_order=max_order + 1
-                )
+    await clear_user_workflows(user_id, state)
+    action = "создан" if created else "обновлён"
+    await status_message.edit_text(
+        f"✅ <b>{escape(account_name)}</b> {action}!\n"
+        "Steam Guard импортирован локально; запрос к Steam не выполнялся.\n"
+        "⚠️ Для входа добавьте пароль в деталях аккаунта.",
+        parse_mode="HTML",
+    )
 
-                if 'Session' in mafile_data:
-                    mafile.access_token = encrypt_value(mafile_data['Session'].get('AccessToken'))
-                    mafile.refresh_token = encrypt_value(mafile_data['Session'].get('RefreshToken'))
 
-                session.add(mafile)
-                await session.commit()
-                import_persisted = True
-
-                await status_msg.edit_text(
-                    f"✅ <b>{safe_account_name}</b> создан!\n"
-                    f"⚠️ Пароль не указан. Добавьте пароль в деталях аккаунта для входа.",
-                    parse_mode="HTML"
-                )
-
-    except json.JSONDecodeError as e:
-        await status_msg.edit_text(f"❌ {safe_file_name}: ошибка JSON")
-    except Exception as e:
-        await status_msg.edit_text(f"❌ {safe_file_name}: {str(e)[:100]}")
-        logger.error(f"Error processing mafile {file_name}: {e}")
-    finally:
-        if import_persisted:
-            await clear_legacy_user_state(user_id)
+@dp.message(NewMaFileImportFlow.waiting_document, NonCommandInputFilter())
+async def reject_new_mafile_non_document(
+    message: Message,
+    state: FSMContext,
+) -> None:
+    """Keep unrelated updates out of the legacy catch-all during import."""
+    if message.chat.type != ChatType.PRIVATE:
+        return
+    await message.answer("❌ Отправьте файл .mafile или .json либо используйте /cancel.")
 
 # ==================== НОВЫЕ КОМАНДЫ ДЛЯ УПРАВЛЕНИЯ ПРОКСИ ====================
 # ВСТАВИТЬ: Эти команды добавить перед функцией main()

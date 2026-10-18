@@ -68,3 +68,9 @@ class LoginPasswordFlow(StatesGroup):
     """Collect a missing Steam password without persisting it in FSM."""
 
     waiting_password = State()
+
+
+class NewMaFileImportFlow(StatesGroup):
+    """Collect a maFile document for creating or updating an account."""
+
+    waiting_document = State()

@@ -24,6 +24,7 @@ from guardbot.bot.states import (
     BulkImportFlow,
     CustomPriceFlow,
     LoginPasswordFlow,
+    NewMaFileImportFlow,
     NoteFlow,
     ProxyFlow,
     UnlockFlow,
@@ -138,7 +139,6 @@ _SECRET_PROMPT_CALLBACK_PREFIXES = (
 )
 _SECRET_LEGACY_STATES = {
     "waiting_email_code",
-    "waiting_mafile",
     "waiting_steam_code",
     "waiting_steam_code_manual",
     "waiting_steam_code_or_mafile",
@@ -149,6 +149,7 @@ _SECRET_FSM_STATES = {
     BotPasswordFlow.waiting_password.state,
     BulkImportFlow.waiting_credentials.state,
     LoginPasswordFlow.waiting_password.state,
+    NewMaFileImportFlow.waiting_document.state,
     NoteFlow.waiting_note.state,
     ProxyFlow.waiting_proxy.state,
     UnlockFlow.waiting_password.state,
