@@ -2999,8 +2999,7 @@ async def callback_lock_bot(callback: CallbackQuery, state: FSMContext):
         await session.commit()
 
     await callback_feedback(callback, "🔒 Бот заблокирован!")
-    await clear_legacy_user_state(telegram_id)
-    await state.clear()
+    await clear_user_workflows(telegram_id, state)
     await callback.message.edit_text(
         "🔒 <b>БОТ ЗАБЛОКИРОВАН</b>\n\n"
         "Для разблокировки используйте:\n"

@@ -17,6 +17,12 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from datetime import UTC, datetime
 from guardbot import security
 from guardbot.bot.main_menu import build_main_menu_view, edit_main_menu
+from guardbot.bot.pending_challenges import (
+    clear_owned_pending_challenge,
+    clear_pending_challenges_for_user,
+    current_pending_challenge_token,
+    owned_pending_challenge_token,
+)
 from guardbot.bot.states import (
     AccountAddFlow,
     AccountMaFileImportFlow,
@@ -27,6 +33,7 @@ from guardbot.bot.states import (
     NewMaFileImportFlow,
     NoteFlow,
     ProxyFlow,
+    SteamChallengeFlow,
     UnlockFlow,
 )
 from guardbot.config import STEAM_CURRENCIES, logger
@@ -140,7 +147,6 @@ _SECRET_PROMPT_CALLBACK_PREFIXES = (
 _SECRET_LEGACY_STATES = {
     "waiting_email_code",
     "waiting_steam_code",
-    "waiting_steam_code_manual",
     "waiting_steam_code_or_mafile",
 }
 _SECRET_FSM_STATES = {
@@ -152,6 +158,7 @@ _SECRET_FSM_STATES = {
     NewMaFileImportFlow.waiting_document.state,
     NoteFlow.waiting_note.state,
     ProxyFlow.waiting_proxy.state,
+    SteamChallengeFlow.waiting_code.state,
     UnlockFlow.waiting_password.state,
 }
 
@@ -325,8 +332,7 @@ async def clear_user_workflows(user_id: int, state: FSMContext | None) -> None:
 
     async def clear() -> None:
         await clear_legacy_user_state(user_id)
-        if state is not None:
-            await state.clear()
+        await clear_pending_challenges_for_user(user_id, state)
 
     await _await_cancellation_safe(clear())
 
@@ -429,8 +435,23 @@ async def delete_secret_message_or_abort(message: Message) -> bool:
         return False
 
 
-async def _clear_typed_secret_state(fsm_context: FSMContext) -> None:
+async def _clear_typed_secret_state(
+    fsm_context: FSMContext,
+    *,
+    user_id: int | None = None,
+    challenge_tokens: tuple[str, ...] = (),
+) -> None:
     current_state = await fsm_context.get_state()
+    if current_state == SteamChallengeFlow.waiting_code.state and user_id is not None:
+        for token in dict.fromkeys(challenge_tokens):
+            await clear_owned_pending_challenge(
+                token,
+                fsm_context,
+                user_id=user_id,
+            )
+        if not challenge_tokens and current_pending_challenge_token(user_id) is None:
+            await fsm_context.clear()
+        return
     if current_state in _SECRET_FSM_STATES:
         await fsm_context.clear()
 
@@ -458,6 +479,11 @@ class SecretStateCleanupMiddleware(BaseMiddleware):
             leased_state = await lease_legacy_user_state(user_id)
         initial_legacy_state = user_states.get(user_id) if user_id is not None else None
         owner_task = asyncio.current_task()
+        initial_challenge_token = (
+            current_pending_challenge_token(user_id)
+            if user_id is not None
+            else None
+        )
 
         try:
             return await handler(event, data)
@@ -479,8 +505,19 @@ class SecretStateCleanupMiddleware(BaseMiddleware):
                     )
             fsm_context = data.get("state")
             if isinstance(fsm_context, FSMContext):
+                challenge_tokens: list[str] = []
+                if initial_challenge_token is not None:
+                    challenge_tokens.append(initial_challenge_token)
+                if user_id is not None:
+                    owned_token = owned_pending_challenge_token(user_id, owner_task)
+                    if owned_token is not None and owned_token not in challenge_tokens:
+                        challenge_tokens.append(owned_token)
                 await _await_cancellation_safe(
-                    _clear_typed_secret_state(fsm_context)
+                    _clear_typed_secret_state(
+                        fsm_context,
+                        user_id=user_id,
+                        challenge_tokens=tuple(challenge_tokens),
+                    )
                 )
             raise
         finally:
@@ -810,10 +847,11 @@ class LockCheckMiddleware(BaseMiddleware):
                         # Блокируем
                         user.last_activity = None
                         await session.commit()
-                        await clear_legacy_user_state(user_id)
                         state = data.get("state")
-                        if isinstance(state, FSMContext):
-                            await state.clear()
+                        await clear_user_workflows(
+                            user_id,
+                            state if isinstance(state, FSMContext) else None,
+                        )
                         data["raw_state"] = None
                         if event.inline_query:
                             await event.inline_query.answer(
@@ -875,7 +913,7 @@ class LockCheckMiddleware(BaseMiddleware):
             # starters clear and re-arm their own state inside the handler,
             # while ordinary navigation must not leave stale secret input
             # active behind the newly rendered destination.
-            await fsm_context.clear()
+            await clear_user_workflows(user_id, fsm_context)
             data["raw_state"] = None
         if deferred_fsm_clear and isinstance(fsm_context, FSMContext):
             await fsm_context.clear()
@@ -2008,16 +2046,9 @@ async def process_back_to_start(callback: CallbackQuery, state: FSMContext):
         return
     await callback_feedback(callback)
 
-    # Очищаем состояние FSM
-    current_state = await state.get_state()
-    if current_state:
-        await state.clear()
-
-    # Очищаем пользовательские состояния
     user_id = callback.from_user.id
-    if user_id in user_states:
-        await clear_legacy_user_state(user_id)
-        logger.info(f"Cleared state for user {user_id}")
+    current_state = await state.get_state()
+    await clear_user_workflows(user_id, state if current_state else None)
 
     user = callback.from_user
 

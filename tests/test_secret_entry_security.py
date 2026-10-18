@@ -303,6 +303,8 @@ def test_manual_code_login_double_failure_still_closes_client(monkeypatch) -> No
             self.close_calls += 1
 
     class Message:
+        chat = SimpleNamespace(type="private")
+
         async def edit_text(self, *args, **kwargs) -> None:
             raise TelegramBadRequest(
                 method=EditMessageText(chat_id=1, message_id=1, text="error"),
@@ -322,6 +324,11 @@ def test_manual_code_login_double_failure_still_closes_client(monkeypatch) -> No
 
     client = Client()
     mafile = SimpleNamespace(id=1, account_name="account")
+
+    class State:
+        async def clear(self) -> None:
+            return None
+
     monkeypatch.setattr(accounts, "AsyncSessionLocal", SessionContext)
     monkeypatch.setattr(
         accounts,
@@ -337,7 +344,7 @@ def test_manual_code_login_double_failure_still_closes_client(monkeypatch) -> No
     async def scenario() -> None:
         callback = Callback()
         try:
-            await accounts.callback_manual_code(callback)
+            await accounts.callback_manual_code(callback, State())
         except TelegramBadRequest:
             pass
         assert callback.answer_calls == 1
@@ -645,9 +652,16 @@ def test_manual_code_cancellation_closes_untransferred_client(monkeypatch) -> No
     class Callback:
         data = "manual_code_1"
         from_user = SimpleNamespace(id=989)
-        message = SimpleNamespace(edit_text=lambda *args, **kwargs: _async_result(None))
+        message = SimpleNamespace(
+            chat=SimpleNamespace(type="private"),
+            edit_text=lambda *args, **kwargs: _async_result(None),
+        )
 
         async def answer(self, *args, **kwargs) -> None:
+            return None
+
+    class State:
+        async def clear(self) -> None:
             return None
 
     client = Client()
@@ -665,7 +679,7 @@ def test_manual_code_cancellation_closes_untransferred_client(monkeypatch) -> No
     )
 
     async def scenario() -> None:
-        task = asyncio.create_task(accounts.callback_manual_code(Callback()))
+        task = asyncio.create_task(accounts.callback_manual_code(Callback(), State()))
         await client.login_started.wait()
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
@@ -676,78 +690,9 @@ def test_manual_code_cancellation_closes_untransferred_client(monkeypatch) -> No
 
 
 def test_manual_code_cancellation_after_state_commit_clears_transferred_client(monkeypatch) -> None:
-    from guardbot.bot import runtime
+    from guardbot.bot import pending_challenges
     from guardbot.bot.handlers import accounts
-
-    class Session:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, traceback):
-            return False
-
-    class Client:
-        def __init__(self, *, block_close: bool = False) -> None:
-            self.block_close = block_close
-            self.close_started = asyncio.Event()
-            self.allow_close = asyncio.Event()
-            self.closed = False
-
-        async def login(self):
-            return accounts.LoginConfirmType.mobile
-
-        async def close(self) -> None:
-            self.close_started.set()
-            if self.block_close:
-                await self.allow_close.wait()
-            self.closed = True
-
-    class Callback:
-        data = "manual_code_1"
-        from_user = SimpleNamespace(id=990)
-        message = SimpleNamespace(edit_text=lambda *args, **kwargs: _async_result(None))
-
-        async def answer(self, *args, **kwargs) -> None:
-            return None
-
-    old_client = Client(block_close=True)
-    new_client = Client()
-    runtime.user_states[990] = {
-        "state": "waiting_email_code",
-        "client": old_client,
-    }
-    mafile = SimpleNamespace(id=1, account_name="account")
-    monkeypatch.setattr(accounts, "AsyncSessionLocal", Session)
-    monkeypatch.setattr(
-        accounts,
-        "get_owned_mafile",
-        lambda *args, **kwargs: _async_result(mafile),
-    )
-    monkeypatch.setattr(
-        accounts.SteamSessionManager,
-        "create_steam_client_from_db",
-        lambda *args, **kwargs: _async_result(new_client),
-    )
-
-    async def scenario() -> None:
-        task = asyncio.create_task(accounts.callback_manual_code(Callback()))
-        await old_client.close_started.wait()
-        task.cancel()
-        await asyncio.sleep(0)
-        old_client.allow_close.set()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-
-        assert 990 not in runtime.user_states
-        assert old_client.closed is True
-        assert new_client.closed is True
-
-    asyncio.run(scenario())
-
-
-def test_manual_code_cancellation_preserves_newer_replacement_state(monkeypatch) -> None:
-    from guardbot.bot import runtime
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.states import SteamChallengeFlow
 
     class Session:
         async def __aenter__(self):
@@ -769,6 +714,100 @@ def test_manual_code_cancellation_preserves_newer_replacement_state(monkeypatch)
     edit_started = asyncio.Event()
 
     class Message:
+        chat = SimpleNamespace(type="private")
+
+        async def edit_text(self, *args, **kwargs) -> None:
+            edit_started.set()
+            await asyncio.Event().wait()
+
+    class Callback:
+        data = "manual_code_1"
+        from_user = SimpleNamespace(id=990)
+        message = Message()
+
+        async def answer(self, *args, **kwargs) -> None:
+            return None
+
+    class State:
+        def __init__(self) -> None:
+            self.raw_state = None
+            self.data = {}
+
+        async def set_state(self, value) -> None:
+            self.raw_state = getattr(value, "state", value)
+
+        async def set_data(self, value) -> None:
+            self.data = dict(value)
+
+        async def get_state(self):
+            return self.raw_state
+
+        async def get_data(self):
+            return dict(self.data)
+
+        async def clear(self) -> None:
+            self.raw_state = None
+            self.data = {}
+
+    client = Client()
+    mafile = SimpleNamespace(id=1, account_name="account")
+    monkeypatch.setattr(accounts, "AsyncSessionLocal", Session)
+    monkeypatch.setattr(
+        accounts,
+        "get_owned_mafile",
+        lambda *args, **kwargs: _async_result(mafile),
+    )
+    monkeypatch.setattr(
+        accounts.SteamSessionManager,
+        "create_steam_client_from_db",
+        lambda *args, **kwargs: _async_result(client),
+    )
+
+    async def scenario() -> None:
+        state = State()
+        task = asyncio.create_task(accounts.callback_manual_code(Callback(), state))
+        await edit_started.wait()
+        assert await state.get_state() == SteamChallengeFlow.waiting_code.state
+        assert pending_challenges.pending_challenge_count() == 1
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert await state.get_state() is None
+        assert await state.get_data() == {}
+        assert client.closed is True
+        assert pending_challenges.pending_challenge_count() == 0
+
+    asyncio.run(scenario())
+
+
+def test_manual_code_cancellation_preserves_newer_replacement_state(monkeypatch) -> None:
+    from guardbot.bot import pending_challenges
+    from guardbot.bot.handlers import accounts
+    from guardbot.bot.states import SteamChallengeFlow
+
+    class Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+    class Client:
+        def __init__(self) -> None:
+            self.closed = False
+
+        async def login(self):
+            return accounts.LoginConfirmType.mobile
+
+        async def close(self) -> None:
+            self.closed = True
+
+    edit_started = asyncio.Event()
+
+    class Message:
+        chat = SimpleNamespace(type="private")
+
         async def edit_text(self, *args, **kwargs) -> None:
             edit_started.set()
             await asyncio.Event().wait()
@@ -781,13 +820,29 @@ def test_manual_code_cancellation_preserves_newer_replacement_state(monkeypatch)
         async def answer(self, *args, **kwargs) -> None:
             return None
 
-    initial_client = Client()
+    class State:
+        def __init__(self) -> None:
+            self.raw_state = None
+            self.data = {}
+
+        async def set_state(self, value) -> None:
+            self.raw_state = getattr(value, "state", value)
+
+        async def set_data(self, value) -> None:
+            self.data = dict(value)
+
+        async def get_state(self):
+            return self.raw_state
+
+        async def get_data(self):
+            return dict(self.data)
+
+        async def clear(self) -> None:
+            self.raw_state = None
+            self.data = {}
+
     challenge_client = Client()
     replacement_client = Client()
-    runtime.user_states[994] = {
-        "state": "waiting_email_code",
-        "client": initial_client,
-    }
     monkeypatch.setattr(accounts, "AsyncSessionLocal", Session)
     monkeypatch.setattr(
         accounts,
@@ -803,21 +858,30 @@ def test_manual_code_cancellation_preserves_newer_replacement_state(monkeypatch)
     )
 
     async def scenario() -> None:
-        task = asyncio.create_task(accounts.callback_manual_code(Callback()))
+        state = State()
+        task = asyncio.create_task(accounts.callback_manual_code(Callback(), state))
         await edit_started.wait()
-        replacement = {
-            "state": "waiting_email_code",
-            "client": replacement_client,
-        }
-        await runtime.set_legacy_user_state(994, replacement, ttl_seconds=60)
+        original_token = (await state.get_data())["challenge_id"]
+        replacement_token = await pending_challenges.publish_pending_challenge(
+            user_id=994,
+            mafile_id=1,
+            kind="manual_mobile",
+            client=replacement_client,
+            state=state,
+            fsm_state=SteamChallengeFlow.waiting_code,
+            ttl_seconds=60,
+        )
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
         try:
-            assert runtime.user_states[994] is replacement
+            assert original_token != replacement_token
+            assert await state.get_state() == SteamChallengeFlow.waiting_code.state
+            assert (await state.get_data())["challenge_id"] == replacement_token
+            assert challenge_client.closed is True
             assert replacement_client.closed is False
         finally:
-            await runtime.clear_legacy_user_state(994)
+            await pending_challenges.clear_pending_challenges_for_user(994)
 
     asyncio.run(scenario())
 

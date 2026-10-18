@@ -6,10 +6,11 @@ from html import escape
 from aiogram.enums import ChatType
 from aiogram.exceptions import TelegramAPIError
 from aiogram import F
-from aiogram.filters import Command, CommandObject, Filter
+from aiogram.filters import Command, CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 from datetime import UTC, datetime
+from guardbot.bot.filters import NonCommandInputFilter
 from guardbot.bot.runtime import (
     bot,
     clear_user_workflows,
@@ -40,13 +41,6 @@ _NEW_MAFILE_ENCRYPTED_FIELDS = (
     "uri",
 )
 
-
-class NonCommandInputFilter(Filter):
-    """Let slash commands continue to the registered command handlers."""
-
-    async def __call__(self, message: Message) -> bool:
-        content = message.text or message.caption or ""
-        return not content.startswith("/")
 
 # ==================== ИМПОРТ СУЩЕСТВУЮЩИХ MAFILES ====================
 # ДОБАВИТЬ В ФАЙЛ ПОСЛЕ ВСЕХ КОМАНД

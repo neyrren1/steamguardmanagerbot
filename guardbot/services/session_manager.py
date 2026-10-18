@@ -77,15 +77,23 @@ class SteamSessionManager:
         return client
 
     @staticmethod
-    async def save_steam_session_to_db(session: AsyncSession, mafile_id: int, client: AsyncSteamMobile):
+    async def save_steam_session_to_db(
+        session: AsyncSession,
+        mafile_id: int,
+        client: AsyncSteamMobile,
+        *,
+        telegram_id: int | None = None,
+    ) -> bool:
         """Сохраняет данные Steam сессии в БД"""
         stmt = select(Mafile).where(Mafile.id == mafile_id)
+        if telegram_id is not None:
+            stmt = stmt.where(Mafile.telegram_id == telegram_id)
         result = await session.execute(stmt)
         mafile = result.scalar_one_or_none()
 
         if not mafile:
             logger.error(f"❌ Mafile not found for id={mafile_id}")
-            return
+            return False
 
         logger.info(f"💾 Starting save_steam_session_to_db for {mafile.account_name}")
         logger.info(f"   Current DB state: country={mafile.country}, currency_id={mafile.currency_id}")
@@ -177,3 +185,4 @@ class SteamSessionManager:
 
         await session.commit()
         logger.info(f"✅ Steam session COMMITTED for account {mafile.account_name}")
+        return True

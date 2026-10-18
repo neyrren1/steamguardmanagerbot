@@ -77,7 +77,7 @@ def test_account_mafile_callback_starts_typed_flow_before_prompt(monkeypatch) ->
     async def scenario() -> None:
         state = _state()
         await state.update_data(stale=True)
-        runtime.user_states[USER_ID] = {"state": "waiting_steam_code_manual"}
+        runtime.user_states[USER_ID] = {"state": "waiting_steam_code"}
         callback = Callback(state, "import_mafile_for_42")
 
         try:

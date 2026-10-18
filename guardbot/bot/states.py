@@ -74,3 +74,9 @@ class NewMaFileImportFlow(StatesGroup):
     """Collect a maFile document for creating or updating an account."""
 
     waiting_document = State()
+
+
+class SteamChallengeFlow(StatesGroup):
+    """Collect login confirmation codes while clients live outside FSM."""
+
+    waiting_code = State()

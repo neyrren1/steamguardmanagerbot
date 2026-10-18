@@ -27,10 +27,6 @@ async def handle_messages(message: Message):
         # Обработка кода когда он был сгенерирован ботом
         await process_steam_code(message, state_data, user_id)
 
-    elif state == "waiting_steam_code_manual":
-        # Обработка кода введенного вручную
-        await process_steam_code(message, state_data, user_id)
-
     elif state == "waiting_email_code":
         # Обработка кода с почты
         await process_steam_code(message, state_data, user_id)

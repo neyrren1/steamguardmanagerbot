@@ -230,7 +230,7 @@ def test_group_rich_demo_clears_global_typed_and_legacy_workflows(
             user_id=user_id,
         )
         await state.set_state(AccountAddFlow.waiting_credentials)
-        runtime.user_states[user_id] = {"state": "waiting_steam_code_manual"}
+        runtime.user_states[user_id] = {"state": "waiting_steam_code"}
         command = "/rich_demo"
         update = Update(
             update_id=1,

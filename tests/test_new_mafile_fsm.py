@@ -263,7 +263,7 @@ def test_import_prompt_failure_rolls_back_both_state_stores() -> None:
 
     user_id = 9902
     state = FakeState()
-    runtime.user_states[user_id] = {"state": "waiting_steam_code_manual"}
+    runtime.user_states[user_id] = {"state": "waiting_steam_code"}
 
     class FailingMessage(PromptMessage):
         async def answer(self, text: str, **_kwargs):

@@ -9,6 +9,7 @@ _REMOVED_STATES = (
     "waiting_identity_secret",
     "waiting_password_for_mafile",
     "waiting_mafile",
+    "waiting_steam_code_manual",
 )
 
 
