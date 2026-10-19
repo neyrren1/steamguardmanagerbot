@@ -8,6 +8,7 @@ from aiogram.types import BufferedInputFile, InlineKeyboardButton, InlineKeyboar
 from datetime import datetime
 from html import escape
 from guardbot.archive_security import ArchiveSecurityError, validate_zip_entry_count
+from guardbot.bot.filters import NonCommandInputFilter
 from guardbot.bot.handlers.commands import build_mafile_dict
 from guardbot.bot.runtime import (
     bot,
@@ -1271,7 +1272,7 @@ async def process_bulk_import(message: Message, state: FSMContext):
     await status_msg.edit_text(result_text, parse_mode="HTML", reply_markup=keyboard)
 
 
-@dp.message(BulkImportFlow.waiting_credentials)
+@dp.message(BulkImportFlow.waiting_credentials, NonCommandInputFilter())
 async def reject_bulk_import_non_text(message: Message, state: FSMContext) -> None:
     """Keep unrelated media out of the legacy catch-all during bulk import."""
     if not await delete_secret_message_or_abort(message):

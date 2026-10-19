@@ -18,6 +18,11 @@ async def handle_messages(message: Message):
     """Handle messages that no workflow-specific handler consumed."""
     user_id = message.from_user.id
 
+    # Unmatched commands (unknown, or for another bot) are never treated as
+    # input, including a command written in a document caption.
+    if (message.text or message.caption or "").startswith("/"):
+        return
+
     if message.document:
         file_name_lower = (message.document.file_name or "").lower()
 
@@ -32,7 +37,7 @@ async def handle_messages(message: Message):
             return
         return
 
-    if message.text and not message.text.startswith('/'):
+    if message.text:
         await message.answer(
             "💡 Используйте команды для управления ботом:\n"
             "/start - главное меню\n"

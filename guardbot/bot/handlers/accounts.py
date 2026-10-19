@@ -878,7 +878,7 @@ async def process_account_note(message: Message, state: FSMContext):
         )
 
 
-@dp.message(NoteFlow.waiting_note)
+@dp.message(NoteFlow.waiting_note, NonCommandInputFilter())
 async def reject_note_non_text(message: Message, state: FSMContext) -> None:
     """Keep note documents from falling through to the legacy import handler."""
     if message.chat.type != ChatType.PRIVATE:
@@ -1051,7 +1051,7 @@ async def callback_set_unique_proxy(
         include_current=False,
     )
 
-@dp.message(ProxyFlow.waiting_proxy)
+@dp.message(ProxyFlow.waiting_proxy, NonCommandInputFilter())
 async def receive_unique_proxy(message: Message, state: FSMContext) -> None:
     """Persist an account proxy without ever placing credentials in FSM."""
     if message.chat.type != ChatType.PRIVATE:
@@ -1654,7 +1654,7 @@ async def receive_login_password(message: Message, state: FSMContext) -> None:
         )
 
 
-@dp.message(LoginPasswordFlow.waiting_password)
+@dp.message(LoginPasswordFlow.waiting_password, NonCommandInputFilter())
 async def reject_login_password_non_text(
     message: Message,
     state: FSMContext,
@@ -2164,7 +2164,7 @@ async def receive_manual_steam_code(message: Message, state: FSMContext) -> None
         )
 
 
-@dp.message(SteamChallengeFlow.waiting_code, F.document)
+@dp.message(SteamChallengeFlow.waiting_code, F.document, NonCommandInputFilter())
 async def reject_challenge_document(message: Message, state: FSMContext) -> None:
     """A file sent at the code prompt may be a maFile: delete it, keep the challenge.
 
@@ -2307,7 +2307,7 @@ def _validated_account_mafile(payload: bytes) -> tuple[dict[str, str | None], di
     return values, session_values
 
 
-@dp.message(AccountMaFileImportFlow.waiting_document)
+@dp.message(AccountMaFileImportFlow.waiting_document, NonCommandInputFilter())
 async def receive_account_mafile(message: Message, state: FSMContext) -> None:
     """Import maFile secrets locally for the selected owned account."""
     if message.chat.type != ChatType.PRIVATE:
