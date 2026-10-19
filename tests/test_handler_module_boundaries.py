@@ -1,5 +1,18 @@
 """Structural contracts for feature-handler module extraction."""
 
+import ast
+from pathlib import Path
+
+
+def _top_level_definitions(module) -> set[str]:
+    tree = ast.parse(Path(module.__file__).read_text(encoding="utf-8"))
+    return {
+        node.name
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+
 
 def test_security_controls_have_a_dedicated_router_and_compatibility_exports() -> None:
     from guardbot.bot import routing
@@ -30,6 +43,7 @@ def test_security_controls_have_a_dedicated_router_and_compatibility_exports() -
             handler.callback is not callback
             for handler in features.router.callback_query.handlers
         )
+    assert _top_level_definitions(features).isdisjoint(callbacks)
 
 
 
@@ -64,12 +78,10 @@ def test_trade_notifications_have_a_dedicated_router_and_compatibility_exports()
                 *features.router.callback_query.handlers,
             )
         )
+    assert _top_level_definitions(features).isdisjoint(callbacks)
 
 
 def test_callback_builders_are_shared_without_duplicate_implementations() -> None:
-    import ast
-    from pathlib import Path
-
     from guardbot.bot.handlers import callback_builders, features
 
     names = (
@@ -85,14 +97,7 @@ def test_callback_builders_are_shared_without_duplicate_implementations() -> Non
     for name in names:
         assert getattr(features, name) is getattr(callback_builders, name)
 
-    features_path = Path(features.__file__)
-    tree = ast.parse(features_path.read_text(encoding="utf-8"))
-    definitions = {
-        node.name
-        for node in tree.body
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-    }
-    assert definitions.isdisjoint(names)
+    assert _top_level_definitions(features).isdisjoint(names)
 
 
 
@@ -123,17 +128,15 @@ def test_inventory_has_a_dedicated_router_and_compatibility_exports() -> None:
             handler.callback is not callback
             for handler in features.router.callback_query.handlers
         )
+    assert _top_level_definitions(features).isdisjoint((*callbacks, *helpers))
 
 
 
 def test_trade_link_has_a_dedicated_router_and_compatibility_export() -> None:
-    import ast
-    from pathlib import Path
-
     from guardbot.bot import routing
     from guardbot.bot.handlers import features, trade_link
 
-    assert routing.ROUTERS.index(trade_link.router) + 1 == routing.ROUTERS.index(
+    assert routing.ROUTERS.index(trade_link.router) < routing.ROUTERS.index(
         features.router
     )
     assert routing.ROUTERS.count(trade_link.router) == 1
@@ -147,10 +150,35 @@ def test_trade_link_has_a_dedicated_router_and_compatibility_export() -> None:
         for handler in features.router.callback_query.handlers
     )
 
-    features_tree = ast.parse(Path(features.__file__).read_text(encoding="utf-8"))
-    definitions = {
-        node.name
-        for node in features_tree.body
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-    }
-    assert "callback_tradelink" not in definitions
+    assert "callback_tradelink" not in _top_level_definitions(features)
+
+
+
+def test_confirmations_have_a_dedicated_router_and_compatibility_exports() -> None:
+    from guardbot.bot import routing
+    from guardbot.bot.handlers import confirmations, features
+
+    callbacks = (
+        "callback_confirmations_menu",
+        "callback_confirm_single",
+        "callback_cancel_single",
+        "callback_confirm_all",
+        "callback_cancel_all",
+    )
+
+    assert routing.ROUTERS.index(confirmations.router) + 1 == routing.ROUTERS.index(
+        features.router
+    )
+    assert routing.ROUTERS.count(confirmations.router) == 1
+    for name in callbacks:
+        callback = getattr(confirmations, name)
+        assert getattr(features, name) is callback
+        assert sum(
+            handler.callback is callback
+            for handler in confirmations.router.callback_query.handlers
+        ) == 1
+        assert all(
+            handler.callback is not callback
+            for handler in features.router.callback_query.handlers
+        )
+    assert _top_level_definitions(features).isdisjoint(callbacks)

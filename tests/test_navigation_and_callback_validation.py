@@ -134,6 +134,11 @@ class FakeCallback:
         ("trade_notifications", "callback_trade_notify_interval", "trade_notify_interval_2147483648", True),
         ("inventory", "callback_inventory_menu", "inventory_menu_2147483648", True),
         ("inventory", "callback_item_detail", "item_detail_1_2147483648_1", False),
+        ("confirmations", "callback_confirmations_menu", "confirmations_menu_2147483648", False),
+        ("confirmations", "callback_confirm_single", "confirm_single_1_not-an-int", False),
+        ("confirmations", "callback_cancel_single", "cancel_single_1_18446744073709551616", False),
+        ("confirmations", "callback_confirm_all", "confirm_all_2147483648", False),
+        ("confirmations", "callback_cancel_all", "cancel_all_0", False),
         ("features", "callback_trade_accept", "trade_accept_1_2_18446744073709551616", False),
         ("features", "callback_trade_accept", "trade_accept_1_2_None", False),
         ("features", "callback_trade_accept", "trade_accept_1_2_https://steamcommunity.com/id/vanity", False),
@@ -148,6 +153,7 @@ def test_malformed_callbacks_are_rejected_before_database(
 ) -> None:
     from guardbot.bot.handlers import (
         accounts,
+        confirmations,
         features,
         groups,
         inventory,
@@ -156,6 +162,7 @@ def test_malformed_callbacks_are_rejected_before_database(
 
     module = {
         "accounts": accounts,
+        "confirmations": confirmations,
         "groups": groups,
         "features": features,
         "inventory": inventory,
@@ -408,7 +415,7 @@ def test_single_confirmation_callbacks_refresh_nonce_before_action(
     callback_data: str,
     allow: bool,
 ) -> None:
-    from guardbot.bot.handlers import features
+    from guardbot.bot.handlers import confirmations
 
     sent = []
 
@@ -439,14 +446,14 @@ def test_single_confirmation_callbacks_refresh_nonce_before_action(
     async def no_op(*_args, **_kwargs):
         return None
 
-    monkeypatch.setattr(features, "AsyncSessionLocal", Session)
-    monkeypatch.setattr(features, "get_owned_mafile", owned)
-    monkeypatch.setattr(features.SteamSessionManager, "create_steam_client_from_db", create)
-    monkeypatch.setattr(features.SteamSessionManager, "save_steam_session_to_db", no_op)
-    monkeypatch.setattr(features, "callback_confirmations_menu", no_op)
-    monkeypatch.setattr(features, "callback_feedback", no_op)
+    monkeypatch.setattr(confirmations, "AsyncSessionLocal", Session)
+    monkeypatch.setattr(confirmations, "get_owned_mafile", owned)
+    monkeypatch.setattr(confirmations.SteamSessionManager, "create_steam_client_from_db", create)
+    monkeypatch.setattr(confirmations.SteamSessionManager, "save_steam_session_to_db", no_op)
+    monkeypatch.setattr(confirmations, "callback_confirmations_menu", no_op)
+    monkeypatch.setattr(confirmations, "callback_feedback", no_op)
 
-    asyncio.run(getattr(features, handler_name)(FakeCallback(callback_data)))
+    asyncio.run(getattr(confirmations, handler_name)(FakeCallback(callback_data)))
 
     assert sent == [("2", "fresh", allow)]
 
