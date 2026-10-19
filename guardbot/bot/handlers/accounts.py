@@ -58,7 +58,6 @@ router = Router(name=__name__)
 
 _MAX_ACCOUNT_MAFILE_BYTES = 1_048_576
 _MAX_MAFILE_VALUE_LENGTH = 65_536
-_MAX_DATABASE_INTEGER = 2_147_483_647
 # Pending Steam login challenges accepted by SteamChallengeFlow.waiting_code:
 # manual_mobile - "enter code manually" button; email - code from Steam email;
 # mobile - password login on an account whose Guard keys the bot does not have.
@@ -889,27 +888,6 @@ async def reject_note_non_text(message: Message, state: FSMContext) -> None:
     await message.answer(
         "❌ Отправьте заметку текстом, точку для удаления или /cancel."
     )
-
-
-def _parse_positive_callback_id(data: str | None, prefix: str) -> int | None:
-    if not data or not data.startswith(prefix):
-        return None
-    raw_id = data.removeprefix(prefix)
-    if not raw_id.isascii() or not raw_id.isdecimal():
-        return None
-    mafile_id = int(raw_id)
-    return mafile_id if 0 < mafile_id <= _MAX_DATABASE_INTEGER else None
-
-
-def _parse_nonnegative_callback_id(data: str | None, prefix: str) -> int | None:
-    """Parse one exact ASCII decimal callback field within database bounds."""
-    if not data or not data.startswith(prefix):
-        return None
-    raw_id = data.removeprefix(prefix)
-    if not raw_id or not raw_id.isascii() or not raw_id.isdecimal():
-        return None
-    value = int(raw_id)
-    return value if value <= _MAX_DATABASE_INTEGER else None
 
 
 async def _start_unique_proxy_prompt(
@@ -3194,3 +3172,10 @@ async def cmd_cancel(message: Message, state: FSMContext):
         await message.answer("❌ Действие отменено.")
     else:
         await message.answer("Нет активных действий для отмены.")
+
+
+from guardbot.bot.handlers.callback_ids import (  # noqa: E402,F401 - compatibility exports
+    _MAX_DATABASE_INTEGER,
+    _parse_nonnegative_callback_id,
+    _parse_positive_callback_id,
+)

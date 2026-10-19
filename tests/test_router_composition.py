@@ -11,7 +11,7 @@ from guardbot.bot import routing, runtime
 ROOT = Path(__file__).resolve().parents[1]
 HANDLERS = ROOT / "guardbot" / "bot" / "handlers"
 # Modules that register no handlers: shared helpers and compatibility facades.
-SUPPORT_MODULES = {"callback_builders", "features"}
+SUPPORT_MODULES = {"callback_builders", "callback_ids", "features"}
 
 
 def _handler_modules() -> list[str]:

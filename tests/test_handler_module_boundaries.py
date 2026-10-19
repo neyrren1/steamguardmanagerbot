@@ -243,3 +243,21 @@ def test_every_handler_callback_is_owned_by_exactly_one_router() -> None:
         for callback, names in owners.items()
         if len(names) != 1
     } == {}
+
+
+def test_handler_definitions_are_unique_across_modules() -> None:
+    """A moved handler or helper must not leave a stale copy behind.
+
+    Compatibility re-exports are imports, so they never count as definitions.
+    """
+    from collections import defaultdict
+
+    handlers = Path(__file__).resolve().parents[1] / "guardbot" / "bot" / "handlers"
+    owners = defaultdict(list)
+    for path in sorted(handlers.glob("*.py")):
+        for node in ast.parse(path.read_text(encoding="utf-8")).body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                owners[node.name].append(path.stem)
+
+    assert len(owners) > 100
+    assert {name: modules for name, modules in owners.items() if len(modules) > 1} == {}
