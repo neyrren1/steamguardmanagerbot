@@ -24,6 +24,7 @@ from guardbot.bot.handlers import (
     messages,
     rich_demo,
     security_controls,
+    trade_link,
     trade_notifications,
 )
 
@@ -35,6 +36,7 @@ ROUTERS: tuple[Router, ...] = (
     bulk_import.router,
     trade_notifications.router,
     inventory.router,
+    trade_link.router,
     features.router,
     security_controls.router,
     groups.router,

@@ -107,7 +107,7 @@ def test_inventory_has_a_dedicated_router_and_compatibility_exports() -> None:
     )
     helpers = ("process_inventory_items_simple", "process_inventory_items")
 
-    assert routing.ROUTERS.index(inventory.router) + 1 == routing.ROUTERS.index(
+    assert routing.ROUTERS.index(inventory.router) < routing.ROUTERS.index(
         features.router
     )
     assert routing.ROUTERS.count(inventory.router) == 1
@@ -123,3 +123,34 @@ def test_inventory_has_a_dedicated_router_and_compatibility_exports() -> None:
             handler.callback is not callback
             for handler in features.router.callback_query.handlers
         )
+
+
+
+def test_trade_link_has_a_dedicated_router_and_compatibility_export() -> None:
+    import ast
+    from pathlib import Path
+
+    from guardbot.bot import routing
+    from guardbot.bot.handlers import features, trade_link
+
+    assert routing.ROUTERS.index(trade_link.router) + 1 == routing.ROUTERS.index(
+        features.router
+    )
+    assert routing.ROUTERS.count(trade_link.router) == 1
+    assert features.callback_tradelink is trade_link.callback_tradelink
+    assert sum(
+        handler.callback is trade_link.callback_tradelink
+        for handler in trade_link.router.callback_query.handlers
+    ) == 1
+    assert all(
+        handler.callback is not trade_link.callback_tradelink
+        for handler in features.router.callback_query.handlers
+    )
+
+    features_tree = ast.parse(Path(features.__file__).read_text(encoding="utf-8"))
+    definitions = {
+        node.name
+        for node in features_tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    assert "callback_tradelink" not in definitions
