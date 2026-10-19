@@ -737,7 +737,7 @@ def test_group_proxy_secret_is_deleted_before_database(monkeypatch) -> None:
 
 def test_settings_navigation_clears_proxy_flow(monkeypatch) -> None:
     from guardbot.bot import runtime
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import menus
     from guardbot.bot.states import ProxyFlow
 
     class Result:
@@ -771,8 +771,8 @@ def test_settings_navigation_clears_proxy_flow(monkeypatch) -> None:
         return None
 
     monkeypatch.setattr(runtime, "AsyncSessionLocal", NavigationSession)
-    monkeypatch.setattr(accounts, "AsyncSessionLocal", NavigationSession)
-    monkeypatch.setattr(accounts, "callback_feedback", feedback)
+    monkeypatch.setattr(menus, "AsyncSessionLocal", NavigationSession)
+    monkeypatch.setattr(menus, "callback_feedback", feedback)
 
     async def scenario() -> None:
         state = _state()
@@ -786,7 +786,7 @@ def test_settings_navigation_clears_proxy_flow(monkeypatch) -> None:
         )
 
         async def handler(_event, _data):
-            await accounts.callback_settings(callback)
+            await menus.callback_settings(callback)
 
         await runtime.LockCheckMiddleware()(
             handler,

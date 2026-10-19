@@ -459,7 +459,7 @@ def test_edit_main_menu_uses_rich_message_and_has_legacy_fallback() -> None:
 
 
 def test_rich_main_menu_can_open_existing_plain_info_screen() -> None:
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import menus
 
     class Message:
         def __init__(self) -> None:
@@ -480,7 +480,7 @@ def test_rich_main_menu_can_open_existing_plain_info_screen() -> None:
 
     callback = Callback()
 
-    asyncio.run(accounts.callback_info(callback))
+    asyncio.run(menus.callback_info(callback))
 
     args, kwargs = callback.message.calls[0]
     assert "ДЕТАЛЬНАЯ ИНФОРМАЦИЯ" in args[0]

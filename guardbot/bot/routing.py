@@ -21,6 +21,7 @@ from guardbot.bot.handlers import (
     imports,
     inline,
     inventory,
+    menus,
     messages,
     rich_demo,
     security_controls,
@@ -31,6 +32,7 @@ from guardbot.bot.handlers import (
 
 # ``messages`` holds the unfiltered fallback handler and must stay last.
 ROUTERS: tuple[Router, ...] = (
+    menus.router,
     accounts.router,
     common.router,
     commands.router,
