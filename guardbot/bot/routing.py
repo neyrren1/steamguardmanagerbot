@@ -12,6 +12,7 @@ from aiogram import Dispatcher, Router
 from aiogram.dispatcher.event.handler import HandlerObject
 
 from guardbot.bot.handlers import (
+    account_add,
     account_list,
     account_login,
     account_mafile,
@@ -49,6 +50,7 @@ ROUTERS: tuple[Router, ...] = (
     steam_challenge.router,
     account_mafile.router,
     account_maintenance.router,
+    account_add.router,
     accounts.router,
     common.router,
     commands.router,

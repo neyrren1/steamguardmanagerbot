@@ -59,7 +59,7 @@ def test_legacy_account_state_name_is_removed() -> None:
 
 
 def test_invalid_account_credentials_keep_fsm_active_for_retry() -> None:
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import account_add
     from guardbot.bot.states import AccountAddFlow
 
     class Message:
@@ -81,7 +81,7 @@ def test_invalid_account_credentials_keep_fsm_active_for_retry() -> None:
         await state.set_state(AccountAddFlow.waiting_credentials)
         message = Message()
 
-        await accounts.receive_account_credentials(message, state)
+        await account_add.receive_account_credentials(message, state)
 
         assert message.deleted is True
         assert message.answers == [
@@ -94,7 +94,7 @@ def test_invalid_account_credentials_keep_fsm_active_for_retry() -> None:
 
 
 def test_incomplete_account_credentials_keep_fsm_active_for_retry() -> None:
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import account_add
     from guardbot.bot.states import AccountAddFlow
 
     class Message:
@@ -116,7 +116,7 @@ def test_incomplete_account_credentials_keep_fsm_active_for_retry() -> None:
             await state.set_state(AccountAddFlow.waiting_credentials)
             message = Message(credentials)
 
-            await accounts.receive_account_credentials(message, state)
+            await account_add.receive_account_credentials(message, state)
 
             assert message.answers == [
                 ("❌ Неверный формат. Используйте: account_name:password", {})
@@ -127,7 +127,7 @@ def test_incomplete_account_credentials_keep_fsm_active_for_retry() -> None:
 
 
 def test_valid_account_credentials_are_encrypted_and_clear_fsm(monkeypatch) -> None:
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import account_add
     from guardbot.bot.states import AccountAddFlow
 
     class Result:
@@ -178,15 +178,15 @@ def test_valid_account_credentials_are_encrypted_and_clear_fsm(monkeypatch) -> N
             self.answers.append((text, kwargs))
 
     session = Session()
-    monkeypatch.setattr(accounts, "AsyncSessionLocal", lambda: session)
-    monkeypatch.setattr(accounts, "encrypt_value", lambda value: f"enc:{value}")
+    monkeypatch.setattr(account_add, "AsyncSessionLocal", lambda: session)
+    monkeypatch.setattr(account_add, "encrypt_value", lambda value: f"enc:{value}")
 
     async def scenario() -> None:
         state = _state()
         await state.set_state(AccountAddFlow.waiting_credentials)
         message = Message()
 
-        await accounts.receive_account_credentials(message, state)
+        await account_add.receive_account_credentials(message, state)
 
         assert message.deleted is True
         assert session.committed is True
@@ -212,7 +212,7 @@ def test_valid_account_credentials_are_encrypted_and_clear_fsm(monkeypatch) -> N
 def test_post_commit_notification_failure_is_not_reported_as_add_failure(
     monkeypatch,
 ) -> None:
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import account_add
     from guardbot.bot.states import AccountAddFlow
 
     class Result:
@@ -264,8 +264,8 @@ def test_post_commit_notification_failure_is_not_reported_as_add_failure(
             )
 
     session = Session()
-    monkeypatch.setattr(accounts, "AsyncSessionLocal", lambda: session)
-    monkeypatch.setattr(accounts, "encrypt_value", lambda value: f"enc:{value}")
+    monkeypatch.setattr(account_add, "AsyncSessionLocal", lambda: session)
+    monkeypatch.setattr(account_add, "encrypt_value", lambda value: f"enc:{value}")
 
     async def scenario() -> None:
         state = _state()
@@ -273,7 +273,7 @@ def test_post_commit_notification_failure_is_not_reported_as_add_failure(
         message = Message()
 
         try:
-            await accounts.receive_account_credentials(message, state)
+            await account_add.receive_account_credentials(message, state)
         except TelegramBadRequest:
             pass
         else:
@@ -288,7 +288,7 @@ def test_post_commit_notification_failure_is_not_reported_as_add_failure(
 
 def test_add_command_starts_local_flow_without_proxy(monkeypatch) -> None:
     from guardbot.bot import pending_challenges, runtime
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import account_add
     from guardbot.bot.states import AccountAddFlow
 
     state = _state()
@@ -315,7 +315,7 @@ def test_add_command_starts_local_flow_without_proxy(monkeypatch) -> None:
         await _publish_challenge(987, state, client)
 
         try:
-            await accounts.cmd_add_steam(message, state)
+            await account_add.cmd_add_steam(message, state)
 
             assert await state.get_state() == AccountAddFlow.waiting_credentials.state
             assert await state.get_data() == {}
@@ -364,7 +364,7 @@ def test_cancel_command_clears_account_add_fsm() -> None:
 
 
 def test_add_command_clears_fsm_when_prompt_cannot_be_sent() -> None:
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import account_add
 
     class Message:
         from_user = SimpleNamespace(id=987)
@@ -380,7 +380,7 @@ def test_add_command_clears_fsm_when_prompt_cannot_be_sent() -> None:
         state = _state()
 
         try:
-            await accounts.cmd_add_steam(Message(), state)
+            await account_add.cmd_add_steam(Message(), state)
         except TelegramBadRequest:
             pass
         else:
@@ -392,7 +392,7 @@ def test_add_command_clears_fsm_when_prompt_cannot_be_sent() -> None:
 
 
 def test_add_command_clears_fsm_on_non_telegram_prompt_failure() -> None:
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import account_add
 
     class Message:
         from_user = SimpleNamespace(id=987)
@@ -405,7 +405,7 @@ def test_add_command_clears_fsm_on_non_telegram_prompt_failure() -> None:
         state = _state()
 
         try:
-            await accounts.cmd_add_steam(Message(), state)
+            await account_add.cmd_add_steam(Message(), state)
         except RuntimeError:
             pass
         else:

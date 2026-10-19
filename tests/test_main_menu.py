@@ -514,7 +514,7 @@ def test_my_accounts_callback_acknowledges_the_query(monkeypatch) -> None:
 
 
 def test_cancel_account_addition_acknowledges_once_with_notice(monkeypatch) -> None:
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import account_add
     from guardbot.bot.states import AccountAddFlow
 
     page_calls = []
@@ -538,13 +538,13 @@ def test_cancel_account_addition_acknowledges_once_with_notice(monkeypatch) -> N
         async def answer(self, text=None):
             self.answers.append(text)
 
-    monkeypatch.setattr(accounts, "show_accounts_page", show_accounts_page)
+    monkeypatch.setattr(account_add, "show_accounts_page", show_accounts_page)
     callback = Callback()
     state = _fsm_context(callback.from_user.id)
 
     async def scenario() -> None:
         await state.set_state(AccountAddFlow.waiting_credentials)
-        await accounts.callback_cancel_state_to_accounts(callback, state)
+        await account_add.callback_cancel_state_to_accounts(callback, state)
         assert await state.get_state() is None
 
     asyncio.run(scenario())
@@ -556,7 +556,7 @@ def test_cancel_account_addition_acknowledges_once_with_notice(monkeypatch) -> N
 
 def test_add_account_button_sets_state_before_showing_credentials_prompt() -> None:
     from guardbot.bot import pending_challenges
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import account_add
     from guardbot.bot.states import AccountAddFlow
 
     user_id = 987
@@ -586,7 +586,7 @@ def test_add_account_button_sets_state_before_showing_credentials_prompt() -> No
     async def scenario() -> None:
         await _publish_challenge(user_id, state, client)
         try:
-            await accounts.callback_add_account(callback, state)
+            await account_add.callback_add_account(callback, state)
             assert callback.answers == 1
             assert client.close_calls == 1
         finally:
