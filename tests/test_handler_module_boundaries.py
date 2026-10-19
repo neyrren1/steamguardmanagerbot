@@ -18,13 +18,14 @@ def test_security_controls_have_a_dedicated_router_and_compatibility_exports() -
     assert routing.ROUTERS.index(features.router) + 1 == routing.ROUTERS.index(
         security_controls.router
     )
+    assert routing.ROUTERS.count(security_controls.router) == 1
     for name in callbacks:
         callback = getattr(security_controls, name)
         assert getattr(features, name) is callback
-        assert any(
+        assert sum(
             handler.callback is callback
             for handler in security_controls.router.callback_query.handlers
-        )
+        ) == 1
         assert all(
             handler.callback is not callback
             for handler in features.router.callback_query.handlers
