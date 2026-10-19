@@ -53,7 +53,7 @@ def test_device_id_is_not_echoed_back_into_telegram_history() -> None:
 
 def test_secret_callbacks_use_central_feedback_instead_of_direct_ack() -> None:
     targets = {
-        Path("guardbot/bot/handlers/features.py"): {
+        Path("guardbot/bot/handlers/security_controls.py"): {
             "callback_lock_bot",
             "callback_cancel_password_to_settings",
         },

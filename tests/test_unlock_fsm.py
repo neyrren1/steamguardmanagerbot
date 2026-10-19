@@ -388,7 +388,7 @@ def test_legacy_unlock_state_name_is_removed() -> None:
 
 
 def test_lock_button_cancels_typed_unlock_flow(monkeypatch) -> None:
-    from guardbot.bot.handlers import features
+    from guardbot.bot.handlers import features, security_controls
     from guardbot.bot.states import UnlockFlow
 
     user = SimpleNamespace(bot_password="stored-hash", last_activity="active")
@@ -422,7 +422,7 @@ def test_lock_button_cancels_typed_unlock_flow(monkeypatch) -> None:
         async def answer(self, *args, **kwargs) -> None:
             return None
 
-    monkeypatch.setattr(features, "AsyncSessionLocal", lambda: Session())
+    monkeypatch.setattr(security_controls, "AsyncSessionLocal", lambda: Session())
 
     async def scenario() -> None:
         state = _state()
@@ -574,7 +574,7 @@ def test_failed_lock_callback_preserves_existing_workflow(
     workflow: str,
 ) -> None:
     from guardbot.bot import pending_challenges
-    from guardbot.bot.handlers import features
+    from guardbot.bot.handlers import features, security_controls
     from guardbot.bot.states import AccountAddFlow
 
     user = SimpleNamespace(bot_password=None)
@@ -600,7 +600,7 @@ def test_failed_lock_callback_preserves_existing_workflow(
         async def answer(self, text=None, **kwargs) -> None:
             return None
 
-    monkeypatch.setattr(features, "AsyncSessionLocal", lambda: Session())
+    monkeypatch.setattr(security_controls, "AsyncSessionLocal", lambda: Session())
 
     async def scenario() -> None:
         state = _state()
