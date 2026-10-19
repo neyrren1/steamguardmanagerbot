@@ -356,7 +356,7 @@ def test_note_cancel_button_clears_typed_flow_before_render(
     monkeypatch,
     account_exists: bool,
 ) -> None:
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import account_proxy
     from guardbot.bot.states import NoteFlow
 
     async def scenario() -> None:
@@ -378,12 +378,12 @@ def test_note_cancel_button_clears_typed_flow_before_render(
         async def render(*_args, **_kwargs):
             render_states.append(await state.get_state())
 
-        monkeypatch.setattr(accounts, "callback_feedback", feedback)
-        monkeypatch.setattr(accounts, "AsyncSessionLocal", lambda: _Session())
-        monkeypatch.setattr(accounts, "get_owned_mafile", owned)
-        monkeypatch.setattr(accounts, "update_account_settings_message", render)
+        monkeypatch.setattr(account_proxy, "callback_feedback", feedback)
+        monkeypatch.setattr(account_proxy, "AsyncSessionLocal", lambda: _Session())
+        monkeypatch.setattr(account_proxy, "get_owned_mafile", owned)
+        monkeypatch.setattr(account_proxy, "update_account_settings_message", render)
 
-        await accounts.callback_cancel_state_to_settings(callback, state)
+        await account_proxy.callback_cancel_state_to_settings(callback, state)
 
         assert await state.get_state() is None
         assert await state.get_data() == {}
@@ -403,7 +403,7 @@ def test_malformed_note_cancel_still_clears_typed_flow(
     monkeypatch,
     callback_data: str,
 ) -> None:
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import account_proxy
     from guardbot.bot.states import NoteFlow
 
     async def scenario() -> None:
@@ -417,14 +417,14 @@ def test_malformed_note_cancel_still_clears_typed_flow(
         async def feedback(*args, **kwargs):
             feedbacks.append((args, kwargs))
 
-        monkeypatch.setattr(accounts, "callback_feedback", feedback)
+        monkeypatch.setattr(account_proxy, "callback_feedback", feedback)
         monkeypatch.setattr(
-            accounts,
+            account_proxy,
             "AsyncSessionLocal",
             lambda: pytest.fail("malformed cancellation must not access the database"),
         )
 
-        await accounts.callback_cancel_state_to_settings(callback, state)
+        await account_proxy.callback_cancel_state_to_settings(callback, state)
 
         assert await state.get_state() is None
         assert await state.get_data() == {}

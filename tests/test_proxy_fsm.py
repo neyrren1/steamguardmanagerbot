@@ -93,7 +93,7 @@ def test_proxy_callbacks_start_typed_flow_before_prompt(
     handler_name: str,
 ) -> None:
     from guardbot.bot import pending_challenges, runtime
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import account_proxy
     from guardbot.bot.states import ProxyFlow
 
     mafile = SimpleNamespace(
@@ -108,9 +108,9 @@ def test_proxy_callbacks_start_typed_flow_before_prompt(
     async def feedback(*_args, **_kwargs):
         return None
 
-    monkeypatch.setattr(accounts, "AsyncSessionLocal", Session)
-    monkeypatch.setattr(accounts, "get_owned_mafile", owned)
-    monkeypatch.setattr(accounts, "callback_feedback", feedback)
+    monkeypatch.setattr(account_proxy, "AsyncSessionLocal", Session)
+    monkeypatch.setattr(account_proxy, "get_owned_mafile", owned)
+    monkeypatch.setattr(account_proxy, "callback_feedback", feedback)
 
     async def scenario() -> None:
         state = _state()
@@ -120,7 +120,7 @@ def test_proxy_callbacks_start_typed_flow_before_prompt(
         callback = Callback(state, f"{handler_name.removeprefix('callback_')}_42")
 
         try:
-            await getattr(accounts, handler_name)(callback, state)
+            await getattr(account_proxy, handler_name)(callback, state)
 
             assert client.close_calls == 1
             assert pending_challenges.current_pending_challenge_token(USER_ID) is None
@@ -137,7 +137,7 @@ def test_proxy_callbacks_start_typed_flow_before_prompt(
 
 @pytest.mark.parametrize("error", [RuntimeError("failed"), asyncio.CancelledError()])
 def test_proxy_prompt_failure_rolls_back(monkeypatch, error: BaseException) -> None:
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import account_proxy
 
     async def owned(*_args, **_kwargs):
         return SimpleNamespace(id=42, account_name="account", proxy=None)
@@ -145,16 +145,16 @@ def test_proxy_prompt_failure_rolls_back(monkeypatch, error: BaseException) -> N
     async def feedback(*_args, **_kwargs):
         return None
 
-    monkeypatch.setattr(accounts, "AsyncSessionLocal", Session)
-    monkeypatch.setattr(accounts, "get_owned_mafile", owned)
-    monkeypatch.setattr(accounts, "callback_feedback", feedback)
+    monkeypatch.setattr(account_proxy, "AsyncSessionLocal", Session)
+    monkeypatch.setattr(account_proxy, "get_owned_mafile", owned)
+    monkeypatch.setattr(account_proxy, "callback_feedback", feedback)
 
     async def scenario() -> None:
         state = _state()
         callback = Callback(state, "change_unique_proxy_42", error)
 
         with pytest.raises(type(error)):
-            await accounts.callback_change_unique_proxy(callback, state)
+            await account_proxy.callback_change_unique_proxy(callback, state)
 
         assert await state.get_state() is None
         assert await state.get_data() == {}
@@ -183,7 +183,7 @@ class InputMessage:
 
 
 def test_proxy_input_encrypts_and_clears_after_commit(monkeypatch) -> None:
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import account_proxy
     from guardbot.bot.states import ProxyFlow
 
     mafile = SimpleNamespace(
@@ -201,12 +201,12 @@ def test_proxy_input_encrypts_and_clears_after_commit(monkeypatch) -> None:
     async def update_settings(*args):
         settings_calls.append(args)
 
-    monkeypatch.setattr(accounts, "AsyncSessionLocal", lambda: session)
-    monkeypatch.setattr(accounts, "get_owned_mafile", owned)
-    monkeypatch.setattr(accounts, "parse_proxy_string", lambda value: value)
-    monkeypatch.setattr(accounts, "encrypt_value", lambda value: f"enc:{value}")
-    monkeypatch.setattr(accounts, "redact_proxy_url", lambda _value: "[REDACTED]")
-    monkeypatch.setattr(accounts, "update_account_settings_message", update_settings)
+    monkeypatch.setattr(account_proxy, "AsyncSessionLocal", lambda: session)
+    monkeypatch.setattr(account_proxy, "get_owned_mafile", owned)
+    monkeypatch.setattr(account_proxy, "parse_proxy_string", lambda value: value)
+    monkeypatch.setattr(account_proxy, "encrypt_value", lambda value: f"enc:{value}")
+    monkeypatch.setattr(account_proxy, "redact_proxy_url", lambda _value: "[REDACTED]")
+    monkeypatch.setattr(account_proxy, "update_account_settings_message", update_settings)
 
     async def scenario() -> None:
         state = _state()
@@ -214,7 +214,7 @@ def test_proxy_input_encrypts_and_clears_after_commit(monkeypatch) -> None:
         await state.set_data({"mafile_id": 42})
         message = InputMessage(state, "http://user:pass@example.com:8080")
 
-        await accounts.receive_unique_proxy(message, state)
+        await account_proxy.receive_unique_proxy(message, state)
 
         assert message.deleted is True
         assert session.committed is True
@@ -227,7 +227,7 @@ def test_proxy_input_encrypts_and_clears_after_commit(monkeypatch) -> None:
 
 
 def test_invalid_proxy_stays_retryable_without_commit(monkeypatch) -> None:
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import account_proxy
     from guardbot.bot.states import ProxyFlow
 
     mafile = SimpleNamespace(
@@ -244,9 +244,9 @@ def test_invalid_proxy_stays_retryable_without_commit(monkeypatch) -> None:
     def invalid_proxy(_value):
         raise ValueError("invalid")
 
-    monkeypatch.setattr(accounts, "AsyncSessionLocal", lambda: session)
-    monkeypatch.setattr(accounts, "get_owned_mafile", owned)
-    monkeypatch.setattr(accounts, "parse_proxy_string", invalid_proxy)
+    monkeypatch.setattr(account_proxy, "AsyncSessionLocal", lambda: session)
+    monkeypatch.setattr(account_proxy, "get_owned_mafile", owned)
+    monkeypatch.setattr(account_proxy, "parse_proxy_string", invalid_proxy)
 
     async def scenario() -> None:
         state = _state()
@@ -254,7 +254,7 @@ def test_invalid_proxy_stays_retryable_without_commit(monkeypatch) -> None:
         await state.set_data({"mafile_id": 42})
         message = InputMessage(state, "bad proxy")
 
-        await accounts.receive_unique_proxy(message, state)
+        await account_proxy.receive_unique_proxy(message, state)
 
         assert message.deleted is True
         assert session.committed is False
@@ -283,14 +283,14 @@ def test_malformed_proxy_callback_is_rejected_before_database(
     monkeypatch,
     data: str,
 ) -> None:
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import account_proxy
 
     async def feedback(*_args, **_kwargs):
         return None
 
-    monkeypatch.setattr(accounts, "callback_feedback", feedback)
+    monkeypatch.setattr(account_proxy, "callback_feedback", feedback)
     monkeypatch.setattr(
-        accounts,
+        account_proxy,
         "AsyncSessionLocal",
         lambda: (_ for _ in ()).throw(AssertionError("database must not open")),
     )
@@ -298,7 +298,7 @@ def test_malformed_proxy_callback_is_rejected_before_database(
     async def scenario() -> None:
         state = _state()
         callback = Callback(state, data)
-        await accounts.callback_change_unique_proxy(callback, state)
+        await account_proxy.callback_change_unique_proxy(callback, state)
         assert await state.get_state() is None
         assert await state.get_data() == {}
 
@@ -320,15 +320,15 @@ def test_malformed_proxy_cancel_clears_before_database(
     monkeypatch,
     data: str,
 ) -> None:
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import account_proxy
     from guardbot.bot.states import ProxyFlow
 
     async def feedback(*_args, **_kwargs):
         return None
 
-    monkeypatch.setattr(accounts, "callback_feedback", feedback)
+    monkeypatch.setattr(account_proxy, "callback_feedback", feedback)
     monkeypatch.setattr(
-        accounts,
+        account_proxy,
         "AsyncSessionLocal",
         lambda: (_ for _ in ()).throw(AssertionError("database must not open")),
     )
@@ -339,7 +339,7 @@ def test_malformed_proxy_cancel_clears_before_database(
         await state.set_data({"mafile_id": 42})
         callback = Callback(state, data)
 
-        await accounts.callback_cancel_state_to_settings(callback, state)
+        await account_proxy.callback_cancel_state_to_settings(callback, state)
 
         assert await state.get_state() is None
         assert await state.get_data() == {}
@@ -348,7 +348,7 @@ def test_malformed_proxy_cancel_clears_before_database(
 
 
 def test_proxy_cancel_accepts_max_database_integer_for_owner_lookup(monkeypatch) -> None:
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import account_proxy
 
     looked_up: list[tuple[int, int]] = []
 
@@ -359,15 +359,15 @@ def test_proxy_cancel_accepts_max_database_integer_for_owner_lookup(monkeypatch)
     async def feedback(*_args, **_kwargs):
         return None
 
-    monkeypatch.setattr(accounts, "AsyncSessionLocal", Session)
-    monkeypatch.setattr(accounts, "get_owned_mafile", owned)
-    monkeypatch.setattr(accounts, "callback_feedback", feedback)
+    monkeypatch.setattr(account_proxy, "AsyncSessionLocal", Session)
+    monkeypatch.setattr(account_proxy, "get_owned_mafile", owned)
+    monkeypatch.setattr(account_proxy, "callback_feedback", feedback)
 
     async def scenario() -> None:
         state = _state()
         callback = Callback(state, "cancel_state_to_settings_2147483647")
 
-        await accounts.callback_cancel_state_to_settings(callback, state)
+        await account_proxy.callback_cancel_state_to_settings(callback, state)
 
         assert looked_up == [(2_147_483_647, USER_ID)]
         assert await state.get_state() is None
@@ -525,24 +525,24 @@ def test_account_detail_escapes_redacted_proxy(monkeypatch) -> None:
 
 
 def test_proxy_test_result_escapes_all_html_values() -> None:
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import account_proxy
 
-    source = inspect.getsource(accounts.callback_test_account_proxy)
+    source = inspect.getsource(account_proxy.callback_test_account_proxy)
     assert "escape(mafile.account_name)" in source
     assert "escape(redact_proxy_url(proxy))" in source
     assert "escape(external_ip)" in source
 
 
 def test_proxy_deletion_failure_aborts_before_fsm_and_database(monkeypatch) -> None:
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import account_proxy
     from guardbot.bot.states import ProxyFlow
 
     async def deletion_failed(_message):
         return False
 
-    monkeypatch.setattr(accounts, "delete_secret_message_or_abort", deletion_failed)
+    monkeypatch.setattr(account_proxy, "delete_secret_message_or_abort", deletion_failed)
     monkeypatch.setattr(
-        accounts,
+        account_proxy,
         "AsyncSessionLocal",
         lambda: (_ for _ in ()).throw(AssertionError("database must not open")),
     )
@@ -559,7 +559,7 @@ def test_proxy_deletion_failure_aborts_before_fsm_and_database(monkeypatch) -> N
 
         state.get_data = forbidden_get_data
         try:
-            await accounts.receive_unique_proxy(message, state)
+            await account_proxy.receive_unique_proxy(message, state)
         finally:
             state.get_data = original_get_data
 
@@ -582,11 +582,11 @@ def test_malformed_proxy_fsm_data_clears_before_database(
     monkeypatch,
     fsm_data: dict,
 ) -> None:
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import account_proxy
     from guardbot.bot.states import ProxyFlow
 
     monkeypatch.setattr(
-        accounts,
+        account_proxy,
         "AsyncSessionLocal",
         lambda: (_ for _ in ()).throw(AssertionError("database must not open")),
     )
@@ -597,7 +597,7 @@ def test_malformed_proxy_fsm_data_clears_before_database(
         await state.set_data(fsm_data)
         message = InputMessage(state, "http://user:pass@example.com:8080")
 
-        await accounts.receive_unique_proxy(message, state)
+        await account_proxy.receive_unique_proxy(message, state)
 
         assert message.deleted is True
         assert await state.get_state() is None
@@ -607,7 +607,7 @@ def test_malformed_proxy_fsm_data_clears_before_database(
 
 
 def test_proxy_dot_removes_proxy_and_disables_unique_mode(monkeypatch) -> None:
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import account_proxy
     from guardbot.bot.states import ProxyFlow
 
     mafile = SimpleNamespace(
@@ -624,9 +624,9 @@ def test_proxy_dot_removes_proxy_and_disables_unique_mode(monkeypatch) -> None:
     async def update_settings(*_args):
         return None
 
-    monkeypatch.setattr(accounts, "AsyncSessionLocal", lambda: session)
-    monkeypatch.setattr(accounts, "get_owned_mafile", owned)
-    monkeypatch.setattr(accounts, "update_account_settings_message", update_settings)
+    monkeypatch.setattr(account_proxy, "AsyncSessionLocal", lambda: session)
+    monkeypatch.setattr(account_proxy, "get_owned_mafile", owned)
+    monkeypatch.setattr(account_proxy, "update_account_settings_message", update_settings)
 
     async def scenario() -> None:
         state = _state()
@@ -634,7 +634,7 @@ def test_proxy_dot_removes_proxy_and_disables_unique_mode(monkeypatch) -> None:
         await state.set_data({"mafile_id": 42})
         message = InputMessage(state, ".")
 
-        await accounts.receive_unique_proxy(message, state)
+        await account_proxy.receive_unique_proxy(message, state)
 
         assert message.deleted is True
         assert session.committed is True
@@ -646,11 +646,11 @@ def test_proxy_dot_removes_proxy_and_disables_unique_mode(monkeypatch) -> None:
 
 
 def test_non_private_proxy_input_does_not_read_private_flow(monkeypatch) -> None:
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import account_proxy
     from guardbot.bot.states import ProxyFlow
 
     monkeypatch.setattr(
-        accounts,
+        account_proxy,
         "AsyncSessionLocal",
         lambda: (_ for _ in ()).throw(AssertionError("database must not open")),
     )
@@ -668,7 +668,7 @@ def test_non_private_proxy_input_does_not_read_private_flow(monkeypatch) -> None
 
         state.get_data = forbidden_get_data
         try:
-            await accounts.receive_unique_proxy(message, state)
+            await account_proxy.receive_unique_proxy(message, state)
         finally:
             state.get_data = original_get_data
 
@@ -802,7 +802,7 @@ def test_settings_navigation_clears_proxy_flow(monkeypatch) -> None:
 
 def test_proxy_retry_callback_rearms_flow_after_navigation_cleanup(monkeypatch) -> None:
     from guardbot.bot import runtime
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import account_proxy
     from guardbot.bot.states import ProxyFlow
 
     mafile = SimpleNamespace(id=42, account_name="account", proxy=None)
@@ -829,9 +829,9 @@ def test_proxy_retry_callback_rearms_flow_after_navigation_cleanup(monkeypatch) 
         return None
 
     monkeypatch.setattr(runtime, "AsyncSessionLocal", RuntimeSession)
-    monkeypatch.setattr(accounts, "AsyncSessionLocal", Session)
-    monkeypatch.setattr(accounts, "get_owned_mafile", owned)
-    monkeypatch.setattr(accounts, "callback_feedback", feedback)
+    monkeypatch.setattr(account_proxy, "AsyncSessionLocal", Session)
+    monkeypatch.setattr(account_proxy, "get_owned_mafile", owned)
+    monkeypatch.setattr(account_proxy, "callback_feedback", feedback)
 
     async def scenario() -> None:
         state = _state()
@@ -846,7 +846,7 @@ def test_proxy_retry_callback_rearms_flow_after_navigation_cleanup(monkeypatch) 
 
         async def handler(_event, _data):
             assert await state.get_state() is None
-            await accounts.callback_change_unique_proxy(callback, state)
+            await account_proxy.callback_change_unique_proxy(callback, state)
 
         await runtime.LockCheckMiddleware()(
             handler,
@@ -861,12 +861,12 @@ def test_proxy_retry_callback_rearms_flow_after_navigation_cleanup(monkeypatch) 
 
 
 def test_unique_proxy_no_longer_uses_legacy_dispatch() -> None:
-    from guardbot.bot.handlers import accounts, messages
+    from guardbot.bot.handlers import account_proxy, messages
 
     sources = "\n".join(
         [
-            inspect.getsource(accounts.callback_change_unique_proxy),
-            inspect.getsource(accounts.callback_set_unique_proxy),
+            inspect.getsource(account_proxy.callback_change_unique_proxy),
+            inspect.getsource(account_proxy.callback_set_unique_proxy),
             inspect.getsource(messages.handle_messages),
         ]
     )
