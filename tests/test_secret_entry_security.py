@@ -352,6 +352,7 @@ def test_action_login_acknowledges_before_missing_password_prompt(monkeypatch) -
 def test_login_command_is_rejected_before_proxy_lookup_outside_private_chat(
     monkeypatch,
 ) -> None:
+    from guardbot.bot import runtime
     from guardbot.bot.handlers import accounts
 
     class Message:
@@ -371,7 +372,11 @@ def test_login_command_is_rejected_before_proxy_lookup_outside_private_chat(
     async def forbidden_proxy_lookup(*args, **kwargs):
         raise AssertionError("proxy/database lookup must not run")
 
-    monkeypatch.setattr(accounts, "check_proxy_available", forbidden_proxy_lookup)
+    # /login is wrapped by runtime.require_proxy, which performs the proxy
+    # lookup; the command body then opens the database and starts the login.
+    monkeypatch.setattr(runtime, "check_proxy_available", forbidden_proxy_lookup)
+    monkeypatch.setattr(accounts, "AsyncSessionLocal", forbidden_proxy_lookup)
+    monkeypatch.setattr(accounts, "perform_login_full", forbidden_proxy_lookup)
 
     async def scenario() -> None:
         message = Message()

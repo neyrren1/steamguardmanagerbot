@@ -88,12 +88,12 @@ def _callback_datas(markup) -> list[str]:
     ]
 
 
-def _patch_client_factory(monkeypatch, accounts, client) -> None:
+def _patch_client_factory(monkeypatch, module, client) -> None:
     async def create(*_args, **_kwargs):
         return client
 
     monkeypatch.setattr(
-        accounts.SteamSessionManager,
+        module.SteamSessionManager,
         "create_steam_client_from_db",
         create,
     )
@@ -287,7 +287,7 @@ def _code_message(user_id: int, text: str = "ABCDE"):
     return Message()
 
 
-def _patch_successful_save(monkeypatch, accounts, saved: list) -> None:
+def _patch_successful_save(monkeypatch, module, saved: list) -> None:
     mafile = SimpleNamespace(id=42, account_name="account")
 
     class Session:
@@ -304,9 +304,9 @@ def _patch_successful_save(monkeypatch, accounts, saved: list) -> None:
         saved.append(kwargs)
         return True
 
-    monkeypatch.setattr(accounts, "AsyncSessionLocal", Session)
-    monkeypatch.setattr(accounts, "get_owned_mafile", owned)
-    monkeypatch.setattr(accounts.SteamSessionManager, "save_steam_session_to_db", save)
+    monkeypatch.setattr(module, "AsyncSessionLocal", Session)
+    monkeypatch.setattr(module, "get_owned_mafile", owned)
+    monkeypatch.setattr(module.SteamSessionManager, "save_steam_session_to_db", save)
 
 
 @pytest.mark.parametrize(
@@ -592,7 +592,6 @@ def test_login_command_handler_receives_fsm_context_through_aiogram(monkeypatch)
     monkeypatch.setattr(accounts, "AsyncSessionLocal", Session)
     from guardbot.bot import runtime
 
-    monkeypatch.setattr(accounts, "check_proxy_available", proxy)
     monkeypatch.setattr(runtime, "check_proxy_available", proxy)
     monkeypatch.setattr(accounts, "perform_login_full", login)
 
