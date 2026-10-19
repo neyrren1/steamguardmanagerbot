@@ -122,8 +122,8 @@ class FakeCallback:
 @pytest.mark.parametrize(
     ("handler_path", "handler_name", "callback_data", "needs_state"),
     [
-        ("accounts", "callback_accounts_page", "accounts_page_not-an-int", False),
-        ("accounts", "callback_accounts_page", "accounts_page_1_extra", False),
+        ("account_list", "callback_accounts_page", "accounts_page_not-an-int", False),
+        ("account_list", "callback_accounts_page", "accounts_page_1_extra", False),
         ("groups", "callback_view_group", "view_group_not-an-int_0", False),
         ("groups", "callback_view_group", "view_group_1", False),
         ("inventory", "callback_inventory_app", "inventory_app_not-an-int_730_2_1", False),
@@ -160,7 +160,7 @@ def test_malformed_callbacks_are_rejected_before_database(
     needs_state: bool,
 ) -> None:
     from guardbot.bot.handlers import (
-        accounts,
+        account_list,
         confirmations,
         groups,
         inventory,
@@ -169,7 +169,7 @@ def test_malformed_callbacks_are_rejected_before_database(
     )
 
     module = {
-        "accounts": accounts,
+        "account_list": account_list,
         "confirmations": confirmations,
         "groups": groups,
         "inventory": inventory,

@@ -12,6 +12,7 @@ from aiogram import Dispatcher, Router
 from aiogram.dispatcher.event.handler import HandlerObject
 
 from guardbot.bot.handlers import (
+    account_list,
     accounts,
     bulk_import,
     commands,
@@ -33,6 +34,7 @@ from guardbot.bot.handlers import (
 # ``messages`` holds the unfiltered fallback handler and must stay last.
 ROUTERS: tuple[Router, ...] = (
     menus.router,
+    account_list.router,
     accounts.router,
     common.router,
     commands.router,

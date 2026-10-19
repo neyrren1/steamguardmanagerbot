@@ -490,7 +490,7 @@ def test_rich_main_menu_can_open_existing_plain_info_screen() -> None:
 
 
 def test_my_accounts_callback_acknowledges_the_query(monkeypatch) -> None:
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import account_list
 
     calls = []
 
@@ -504,10 +504,10 @@ def test_my_accounts_callback_acknowledges_the_query(monkeypatch) -> None:
         async def answer(self):
             self.answers += 1
 
-    monkeypatch.setattr(accounts, "show_accounts_page", show_accounts_page)
+    monkeypatch.setattr(account_list, "show_accounts_page", show_accounts_page)
     callback = Callback()
 
-    asyncio.run(accounts.callback_my_accounts(callback))
+    asyncio.run(account_list.callback_my_accounts(callback))
 
     assert calls == [(callback, 0)]
     assert callback.answers == 1
