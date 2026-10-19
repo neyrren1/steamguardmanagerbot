@@ -21,3 +21,10 @@ from guardbot.bot.handlers.inline import *
 from guardbot.bot.handlers.rich_demo import *
 from guardbot.bot.handlers.messages import *
 # isort: on
+
+# ``router`` and the imported aiogram ``Router`` type are implementation
+# details of handler modules, not historical tgbot API names. Every wildcard
+# import above overwrites them; remove the final aliases from the compatibility
+# namespace instead of exposing the catch-all router as ``tgbot.router``.
+globals().pop("router", None)
+globals().pop("Router", None)

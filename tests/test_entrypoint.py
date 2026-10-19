@@ -12,6 +12,14 @@ from guardbot.bot import routing, runtime
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_tgbot_uses_the_same_composition_root() -> None:
+    import tgbot
+
+    assert tgbot.main is entrypoint.main
+    assert not hasattr(tgbot, "router")
+    assert not hasattr(tgbot, "Router")
+
+
 def test_main_preserves_initialization_order(monkeypatch) -> None:
     calls: list[object] = []
     fake_bot = object()
