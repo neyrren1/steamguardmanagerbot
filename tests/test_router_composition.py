@@ -10,10 +10,15 @@ from guardbot.bot import routing, runtime
 
 ROOT = Path(__file__).resolve().parents[1]
 HANDLERS = ROOT / "guardbot" / "bot" / "handlers"
+SUPPORT_MODULES = {"callback_builders"}
 
 
 def _handler_modules() -> list[str]:
-    return sorted(p.stem for p in HANDLERS.glob("*.py") if p.stem != "__init__")
+    return sorted(
+        p.stem
+        for p in HANDLERS.glob("*.py")
+        if p.stem != "__init__" and p.stem not in SUPPORT_MODULES
+    )
 
 
 def test_every_handler_module_has_one_router_in_the_composition() -> None:
@@ -25,6 +30,14 @@ def test_every_handler_module_has_one_router_in_the_composition() -> None:
     ]
     assert sorted(id(r) for r in routers) == sorted(id(r) for r in routing.ROUTERS)
     assert len(set(map(id, routing.ROUTERS))) == len(routing.ROUTERS)
+
+
+def test_support_modules_do_not_register_handlers() -> None:
+    import importlib
+
+    for name in SUPPORT_MODULES:
+        module = importlib.import_module(f"guardbot.bot.handlers.{name}")
+        assert not hasattr(module, "router")
 
 
 @pytest.mark.parametrize("name", _handler_modules())

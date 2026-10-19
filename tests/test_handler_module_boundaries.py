@@ -64,3 +64,32 @@ def test_trade_notifications_have_a_dedicated_router_and_compatibility_exports()
                 *features.router.callback_query.handlers,
             )
         )
+
+
+def test_callback_builders_are_shared_without_duplicate_implementations() -> None:
+    import ast
+    from pathlib import Path
+
+    from guardbot.bot.handlers import callback_builders, features
+
+    names = (
+        "_bounded_identifier",
+        "_item_detail_callback",
+        "_confirmation_callback",
+        "_trade_accept_callback",
+        "_trade_detail_callback",
+        "_trade_decline_callback",
+        "_trade_cancel_callback",
+        "_inventory_page_callback",
+    )
+    for name in names:
+        assert getattr(features, name) is getattr(callback_builders, name)
+
+    features_path = Path(features.__file__)
+    tree = ast.parse(features_path.read_text(encoding="utf-8"))
+    definitions = {
+        node.name
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    assert definitions.isdisjoint(names)
