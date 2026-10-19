@@ -4,7 +4,7 @@ import ast
 from pathlib import Path
 
 import pytest
-from aiogram import Dispatcher
+from aiogram import Dispatcher, Router
 
 from guardbot.bot import routing, runtime
 
@@ -39,6 +39,9 @@ def test_support_modules_do_not_register_handlers() -> None:
     for name in SUPPORT_MODULES:
         module = importlib.import_module(f"guardbot.bot.handlers.{name}")
         assert not hasattr(module, "router")
+        assert not [
+            attr for attr, value in vars(module).items() if isinstance(value, Router)
+        ], name
 
 
 @pytest.mark.parametrize("name", _handler_modules())

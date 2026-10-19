@@ -162,7 +162,6 @@ def test_malformed_callbacks_are_rejected_before_database(
     from guardbot.bot.handlers import (
         accounts,
         confirmations,
-        features,
         groups,
         inventory,
         trade_notifications,
@@ -173,7 +172,6 @@ def test_malformed_callbacks_are_rejected_before_database(
         "accounts": accounts,
         "confirmations": confirmations,
         "groups": groups,
-        "features": features,
         "inventory": inventory,
         "trade_notifications": trade_notifications,
         "trade_operations": trade_operations,

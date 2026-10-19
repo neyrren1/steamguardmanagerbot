@@ -1,6 +1,6 @@
 import asyncio
-import inspect
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -380,11 +380,15 @@ def test_wrong_unlock_password_keeps_typed_flow_active(monkeypatch) -> None:
 
 
 def test_legacy_unlock_state_name_is_removed() -> None:
-    from guardbot.bot import runtime
-    from guardbot.bot.handlers import commands, features, messages
+    package = Path(__file__).resolve().parents[1] / "guardbot"
+    sources = sorted(package.rglob("*.py"))
 
-    for module in (runtime, commands, features, messages):
-        assert "waiting_unlock_password" not in inspect.getsource(module)
+    assert any(path.name == "security_controls.py" for path in sources)
+    assert [
+        str(path.relative_to(package))
+        for path in sources
+        if "waiting_unlock_password" in path.read_text(encoding="utf-8")
+    ] == []
 
 
 def test_lock_button_cancels_typed_unlock_flow(monkeypatch) -> None:

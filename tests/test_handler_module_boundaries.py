@@ -3,6 +3,8 @@
 import ast
 from pathlib import Path
 
+from aiogram import Router
+
 
 def _top_level_definitions(module) -> set[str]:
     tree = ast.parse(Path(module.__file__).read_text(encoding="utf-8"))
@@ -26,6 +28,11 @@ def test_features_is_a_pure_compatibility_facade() -> None:
 
     assert not hasattr(features, "router")
     assert _top_level_definitions(features) == set()
+    body = ast.parse(Path(features.__file__).read_text(encoding="utf-8")).body
+    docstring, *statements = body
+    assert isinstance(docstring, ast.Expr) and isinstance(docstring.value, ast.Constant)
+    assert statements and all(isinstance(node, ast.ImportFrom) for node in statements)
+    assert not [name for name, value in vars(features).items() if isinstance(value, Router)]
     assert all(
         router.name != "guardbot.bot.handlers.features" for router in routing.ROUTERS
     )
@@ -216,3 +223,23 @@ def test_trade_operations_have_a_dedicated_router_and_compatibility_exports() ->
             for handler in trade_operations.router.callback_query.handlers
         ) == 1
     assert _top_level_definitions(features).isdisjoint((*callbacks, *helpers))
+
+
+
+def test_every_handler_callback_is_owned_by_exactly_one_router() -> None:
+    from collections import defaultdict
+
+    from guardbot.bot import routing, runtime
+
+    owners = defaultdict(set)
+    for router in (runtime.dp, *routing.ROUTERS):
+        for observer in router.observers.values():
+            for handler in observer.handlers:
+                owners[handler.callback].add(router.name)
+
+    assert owners, "registry must not be empty"
+    assert {
+        callback.__qualname__: sorted(names)
+        for callback, names in owners.items()
+        if len(names) != 1
+    } == {}
