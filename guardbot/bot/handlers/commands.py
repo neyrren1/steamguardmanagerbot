@@ -13,6 +13,12 @@ from datetime import UTC, datetime
 from guardbot.bot.callback_validation import validated_callback_data
 from guardbot.bot.handlers.accounts import callback_account_detail, callback_account_settings
 from guardbot.bot.handlers.common import cmd_start_help
+from guardbot.bot.handlers.confirmations import (
+    callback_confirm_all,
+    callback_confirmations_menu,
+)
+from guardbot.bot.handlers.inventory import callback_inventory_menu
+from guardbot.bot.handlers.trade_notifications import callback_trades_menu
 from guardbot.bot.runtime import (
     callback_feedback,
     check_proxy_available,
@@ -44,11 +50,6 @@ import time
 import zipfile
 
 router = Router(name=__name__)
-
-def _features():
-    from guardbot.bot.handlers import features
-    return features
-
 
 # ==================== КОМАНДА: ИНВЕНТАРЬ ====================
 @router.message(Command("inventory"))
@@ -132,7 +133,7 @@ async def cmd_inventory(
             data=f"inventory_menu_{mafile.id}"
         )
 
-        await _features().callback_inventory_menu(fake_callback, state)
+        await callback_inventory_menu(fake_callback, state)
 # ==================== КОМАНДА: ПОДТВЕРЖДЕНИЯ ====================
 @router.message(Command("confirmations"))
 @router.message(Command("conf"))
@@ -215,7 +216,7 @@ async def cmd_confirmations(message: Message, command: CommandObject):
             data=f"confirmations_menu_{mafile.id}"
         )
 
-        await _features().callback_confirmations_menu(fake_callback)
+        await callback_confirmations_menu(fake_callback)
 
 # ==================== КОМАНДА: ПОДТВЕРДИТЬ ВСЁ ====================
 @router.message(Command("confirmall"))
@@ -296,7 +297,7 @@ async def cmd_confirmall(message: Message, command: CommandObject):
             data=f"confirm_all_{mafile.id}"
         )
 
-        await _features().callback_confirm_all(fake_callback)
+        await callback_confirm_all(fake_callback)
 
 # ==================== КОМАНДА: ТРЕЙДЫ ====================
 @router.message(Command("trades"))
@@ -383,7 +384,7 @@ async def cmd_trades(message: Message, command: CommandObject):
             data=f"trades_menu_{mafile.id}"
         )
 
-        await _features().callback_trades_menu(fake_callback)
+        await callback_trades_menu(fake_callback)
 
 # ==================== КОМАНДА: НАСТРОЙКИ АККАУНТА ====================
 @router.message(Command("settings"))
