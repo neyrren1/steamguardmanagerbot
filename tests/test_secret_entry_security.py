@@ -298,7 +298,7 @@ def test_action_login_acknowledges_before_missing_password_prompt(monkeypatch) -
     from aiogram.exceptions import TelegramBadRequest
     from aiogram.methods import EditMessageText
 
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import account_login
 
     class SessionContext:
         async def __aenter__(self):
@@ -326,14 +326,14 @@ def test_action_login_acknowledges_before_missing_password_prompt(monkeypatch) -
             self.answer_calls += 1
 
     mafile = SimpleNamespace(id=1, account_name="account", password="")
-    monkeypatch.setattr(accounts, "AsyncSessionLocal", SessionContext)
+    monkeypatch.setattr(account_login, "AsyncSessionLocal", SessionContext)
     monkeypatch.setattr(
-        accounts,
+        account_login,
         "check_proxy_available",
         lambda *args, **kwargs: _async_result((True, "proxy")),
     )
     monkeypatch.setattr(
-        accounts,
+        account_login,
         "get_owned_mafile",
         lambda *args, **kwargs: _async_result(mafile),
     )
@@ -341,7 +341,7 @@ def test_action_login_acknowledges_before_missing_password_prompt(monkeypatch) -
     async def scenario() -> None:
         callback = Callback()
         try:
-            await accounts.callback_action_login(callback, SimpleNamespace())
+            await account_login.callback_action_login(callback, SimpleNamespace())
         except TelegramBadRequest:
             pass
         assert callback.answer_calls == 1
@@ -384,7 +384,7 @@ def test_login_command_is_rejected_before_proxy_lookup_outside_private_chat(
 
 def test_password_login_handoff_preserves_new_challenge_state(monkeypatch) -> None:
     from guardbot.bot import pending_challenges
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import account_login
     from guardbot.bot.states import LoginPasswordFlow, SteamChallengeFlow
 
     class Session:
@@ -453,19 +453,19 @@ def test_password_login_handoff_preserves_new_challenge_state(monkeypatch) -> No
             fsm_state=SteamChallengeFlow.waiting_code,
         )
 
-    monkeypatch.setattr(accounts, "AsyncSessionLocal", SessionContext)
+    monkeypatch.setattr(account_login, "AsyncSessionLocal", SessionContext)
     monkeypatch.setattr(
-        accounts,
+        account_login,
         "get_owned_mafile",
         lambda *args, **kwargs: _async_result(mafile),
     )
-    monkeypatch.setattr(accounts, "encrypt_value", lambda value: "encrypted")
-    monkeypatch.setattr(accounts, "perform_login_full", perform_login)
+    monkeypatch.setattr(account_login, "encrypt_value", lambda value: "encrypted")
+    monkeypatch.setattr(account_login, "perform_login_full", perform_login)
 
     async def scenario() -> None:
         state = State()
         try:
-            await accounts.receive_login_password(Message(), state)
+            await account_login.receive_login_password(Message(), state)
             assert await state.get_state() == SteamChallengeFlow.waiting_code.state
             assert (await state.get_data())["kind"] == "email"
             assert pending_challenges.current_pending_challenge_token(987) is not None
@@ -480,7 +480,7 @@ def test_login_completion_edit_failure_closes_untransferred_client(monkeypatch) 
     from aiogram.exceptions import TelegramBadRequest
     from aiogram.methods import EditMessageText
 
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import account_login
 
     class Client:
         steamid = 123
@@ -489,7 +489,7 @@ def test_login_completion_edit_failure_closes_untransferred_client(monkeypatch) 
             self.close_calls = 0
 
         async def login(self):
-            return accounts.LoginConfirmType.none
+            return account_login.LoginConfirmType.none
 
         async def confirm_login(self) -> None:
             return None
@@ -520,19 +520,19 @@ def test_login_completion_edit_failure_closes_untransferred_client(monkeypatch) 
     client = Client()
     mafile = SimpleNamespace(id=1, account_name="account")
     monkeypatch.setattr(
-        accounts.SteamSessionManager,
+        account_login.SteamSessionManager,
         "create_steam_client_from_db",
         lambda *args, **kwargs: _async_result(client),
     )
     monkeypatch.setattr(
-        accounts.SteamSessionManager,
+        account_login.SteamSessionManager,
         "save_steam_session_to_db",
         lambda *args, **kwargs: _async_result(None),
     )
 
     async def scenario() -> None:
         try:
-            await accounts.perform_login_full(
+            await account_login.perform_login_full(
                 Message(),
                 mafile,
                 Session(),
@@ -547,14 +547,14 @@ def test_login_completion_edit_failure_closes_untransferred_client(monkeypatch) 
 
 
 def test_non_telegram_challenge_prompt_failure_rolls_back_client_state(monkeypatch) -> None:
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import account_login
 
     class Client:
         def __init__(self) -> None:
             self.close_calls = 0
 
         async def login(self):
-            return accounts.LoginConfirmType.email
+            return account_login.LoginConfirmType.email
 
         async def close(self) -> None:
             self.close_calls += 1
@@ -577,7 +577,7 @@ def test_non_telegram_challenge_prompt_failure_rolls_back_client_state(monkeypat
     client = Client()
     mafile = SimpleNamespace(id=1, account_name="account", shared_secret=None)
     monkeypatch.setattr(
-        accounts.SteamSessionManager,
+        account_login.SteamSessionManager,
         "create_steam_client_from_db",
         lambda *args, **kwargs: _async_result(client),
     )
@@ -607,7 +607,7 @@ def test_non_telegram_challenge_prompt_failure_rolls_back_client_state(monkeypat
         from guardbot.bot import pending_challenges
 
         state = State()
-        await accounts.perform_login_full(
+        await account_login.perform_login_full(
             Message(),
             mafile,
             SimpleNamespace(),
@@ -1107,7 +1107,7 @@ def test_secret_export_sinks_reject_group_before_decryption_or_database(monkeypa
 
 
 def test_perform_login_full_close_resists_repeated_cancellation(monkeypatch) -> None:
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import account_login
 
     class Client:
         def __init__(self) -> None:
@@ -1131,14 +1131,14 @@ def test_perform_login_full_close_resists_repeated_cancellation(monkeypatch) -> 
 
     client = Client()
     monkeypatch.setattr(
-        accounts.SteamSessionManager,
+        account_login.SteamSessionManager,
         "create_steam_client_from_db",
         lambda *args, **kwargs: _async_result(client),
     )
 
     async def scenario() -> None:
         task = asyncio.create_task(
-            accounts.perform_login_full(
+            account_login.perform_login_full(
                 Message(),
                 SimpleNamespace(id=1, account_name="account"),
                 SimpleNamespace(),

@@ -70,7 +70,7 @@ def test_login_password_flow_has_typed_state() -> None:
 
 def test_enter_password_callback_starts_typed_flow_before_prompt(monkeypatch) -> None:
     from guardbot.bot import pending_challenges
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import account_login
     from guardbot.bot.states import LoginPasswordFlow
 
     user_id = 811
@@ -97,11 +97,11 @@ def test_enter_password_callback_starts_typed_flow_before_prompt(monkeypatch) ->
     async def feedback(*_args, **_kwargs) -> None:
         return None
 
-    monkeypatch.setattr(accounts, "AsyncSessionLocal", Session)
-    monkeypatch.setattr(accounts, "get_owned_mafile", owned)
-    monkeypatch.setattr(accounts, "callback_feedback", feedback)
+    monkeypatch.setattr(account_login, "AsyncSessionLocal", Session)
+    monkeypatch.setattr(account_login, "get_owned_mafile", owned)
+    monkeypatch.setattr(account_login, "callback_feedback", feedback)
     monkeypatch.setattr(
-        accounts,
+        account_login,
         "check_proxy_available",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("collecting a local password must not require proxy")
@@ -112,7 +112,7 @@ def test_enter_password_callback_starts_typed_flow_before_prompt(monkeypatch) ->
     async def scenario() -> None:
         await _publish_challenge(user_id, state, client)
         try:
-            await accounts.callback_enter_password(callback, state)
+            await account_login.callback_enter_password(callback, state)
 
             assert client.close_calls == 1
             assert pending_challenges.current_pending_challenge_token(user_id) is None
@@ -131,7 +131,7 @@ def test_enter_password_prompt_failure_rolls_back_and_closes_challenge(
     monkeypatch,
 ) -> None:
     from guardbot.bot import pending_challenges
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import account_login
 
     user_id = 812
     state = FakeState()
@@ -160,11 +160,11 @@ def test_enter_password_prompt_failure_rolls_back_and_closes_challenge(
     async def feedback(*_args, **_kwargs) -> None:
         return None
 
-    monkeypatch.setattr(accounts, "AsyncSessionLocal", Session)
-    monkeypatch.setattr(accounts, "get_owned_mafile", owned)
-    monkeypatch.setattr(accounts, "callback_feedback", feedback)
+    monkeypatch.setattr(account_login, "AsyncSessionLocal", Session)
+    monkeypatch.setattr(account_login, "get_owned_mafile", owned)
+    monkeypatch.setattr(account_login, "callback_feedback", feedback)
     monkeypatch.setattr(
-        accounts,
+        account_login,
         "check_proxy_available",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("collecting a local password must not require proxy")
@@ -176,7 +176,7 @@ def test_enter_password_prompt_failure_rolls_back_and_closes_challenge(
         await _publish_challenge(user_id, state, client)
         try:
             try:
-                await accounts.callback_enter_password(callback, state)
+                await account_login.callback_enter_password(callback, state)
             except RuntimeError as error:
                 assert str(error) == "prompt failed"
             else:
@@ -195,7 +195,7 @@ def test_enter_password_prompt_failure_rolls_back_and_closes_challenge(
 def test_login_password_deletion_failure_aborts_before_state_and_database(
     monkeypatch,
 ) -> None:
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import account_login
     from guardbot.bot.states import LoginPasswordFlow
 
     state = FakeState()
@@ -219,10 +219,10 @@ def test_login_password_deletion_failure_aborts_before_state_and_database(
     def database_must_not_open():
         raise AssertionError("database must not open after deletion failure")
 
-    monkeypatch.setattr(accounts, "AsyncSessionLocal", database_must_not_open)
+    monkeypatch.setattr(account_login, "AsyncSessionLocal", database_must_not_open)
     message = Message()
 
-    asyncio.run(accounts.receive_login_password(message, state))
+    asyncio.run(account_login.receive_login_password(message, state))
 
     assert state.state == LoginPasswordFlow.waiting_password.state
     assert state.data == {"mafile_id": 42}
@@ -235,7 +235,7 @@ def test_login_password_deletion_failure_aborts_before_state_and_database(
 def test_valid_login_password_is_encrypted_then_flow_clears_before_login(
     monkeypatch,
 ) -> None:
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import account_login
     from guardbot.bot.states import LoginPasswordFlow
 
     user_id = 814
@@ -278,12 +278,12 @@ def test_valid_login_password_is_encrypted_then_flow_clears_before_login(
         assert mafile.password == "enc:top-secret"
         events.append("login")
 
-    monkeypatch.setattr(accounts, "AsyncSessionLocal", Session)
-    monkeypatch.setattr(accounts, "get_owned_mafile", owned)
-    monkeypatch.setattr(accounts, "encrypt_value", lambda value: f"enc:{value}")
-    monkeypatch.setattr(accounts, "perform_login_full", login)
+    monkeypatch.setattr(account_login, "AsyncSessionLocal", Session)
+    monkeypatch.setattr(account_login, "get_owned_mafile", owned)
+    monkeypatch.setattr(account_login, "encrypt_value", lambda value: f"enc:{value}")
+    monkeypatch.setattr(account_login, "perform_login_full", login)
 
-    asyncio.run(accounts.receive_login_password(Message(), state))
+    asyncio.run(account_login.receive_login_password(Message(), state))
 
     assert events == ["delete", "ownership", "commit", "feedback", "login"]
     assert state.state is None
@@ -291,7 +291,7 @@ def test_valid_login_password_is_encrypted_then_flow_clears_before_login(
 
 
 def test_malformed_login_password_state_clears_before_database(monkeypatch) -> None:
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import account_login
     from guardbot.bot.states import LoginPasswordFlow
 
     state = FakeState()
@@ -315,10 +315,10 @@ def test_malformed_login_password_state_clears_before_database(monkeypatch) -> N
     def database_must_not_open():
         raise AssertionError("database must not open for malformed state")
 
-    monkeypatch.setattr(accounts, "AsyncSessionLocal", database_must_not_open)
+    monkeypatch.setattr(account_login, "AsyncSessionLocal", database_must_not_open)
     message = Message()
 
-    asyncio.run(accounts.receive_login_password(message, state))
+    asyncio.run(account_login.receive_login_password(message, state))
 
     assert state.state is None
     assert state.data == {}
@@ -340,7 +340,7 @@ def test_removed_login_password_legacy_state_has_no_production_references() -> N
 
 def test_login_password_non_text_fallback_precedes_legacy_catch_all() -> None:
     from guardbot.bot import routing, runtime
-    from guardbot.bot.handlers.accounts import reject_login_password_non_text
+    from guardbot.bot.handlers.account_login import reject_login_password_non_text
     from guardbot.bot.handlers.messages import handle_messages
 
     callbacks = [
@@ -363,7 +363,7 @@ def test_dispatcher_rejects_group_login_password_before_database(
     from aiogram.types import Chat, Message, Update, User
 
     from guardbot.bot import runtime
-    from guardbot.bot.handlers import accounts, messages  # noqa: F401
+    from guardbot.bot.handlers import account_login, messages  # noqa: F401
     from guardbot.bot.states import LoginPasswordFlow
 
     user_id = 816
@@ -390,7 +390,7 @@ def test_dispatcher_rejects_group_login_password_before_database(
         raise AssertionError("group password must be rejected before database")
 
     monkeypatch.setattr(runtime, "AsyncSessionLocal", database_must_not_open)
-    monkeypatch.setattr(accounts, "AsyncSessionLocal", database_must_not_open)
+    monkeypatch.setattr(account_login, "AsyncSessionLocal", database_must_not_open)
 
     async def scenario() -> None:
         bot = FakeBot()
@@ -446,7 +446,7 @@ def test_dispatcher_routes_private_login_password_through_typed_fsm(
     from aiogram.types import Chat, Message, Update, User
 
     from guardbot.bot import runtime
-    from guardbot.bot.handlers import accounts, messages  # noqa: F401
+    from guardbot.bot.handlers import account_login, messages  # noqa: F401
     from guardbot.bot.states import LoginPasswordFlow
 
     user_id = 817
@@ -511,10 +511,10 @@ def test_dispatcher_routes_private_login_password_through_typed_fsm(
         login_calls.append(True)
 
     monkeypatch.setattr(runtime, "AsyncSessionLocal", LockSession)
-    monkeypatch.setattr(accounts, "AsyncSessionLocal", lambda: domain_session)
-    monkeypatch.setattr(accounts, "get_owned_mafile", owned)
-    monkeypatch.setattr(accounts, "encrypt_value", lambda value: f"enc:{value}")
-    monkeypatch.setattr(accounts, "perform_login_full", login)
+    monkeypatch.setattr(account_login, "AsyncSessionLocal", lambda: domain_session)
+    monkeypatch.setattr(account_login, "get_owned_mafile", owned)
+    monkeypatch.setattr(account_login, "encrypt_value", lambda value: f"enc:{value}")
+    monkeypatch.setattr(account_login, "perform_login_full", login)
 
     async def scenario() -> None:
         bot = FakeBot()

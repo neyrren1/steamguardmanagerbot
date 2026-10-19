@@ -101,18 +101,18 @@ def _patch_client_factory(monkeypatch, accounts, client) -> None:
 
 def test_email_login_publishes_typed_challenge_for_explicit_user(monkeypatch) -> None:
     from guardbot.bot import pending_challenges
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import account_login
     from guardbot.bot.states import SteamChallengeFlow
 
     user_id = 601
-    client = Client(accounts.LoginConfirmType.email)
-    _patch_client_factory(monkeypatch, accounts, client)
+    client = Client(account_login.LoginConfirmType.email)
+    _patch_client_factory(monkeypatch, account_login, client)
     mafile = SimpleNamespace(id=1, account_name="account", shared_secret=None)
 
     async def scenario() -> None:
         state = FakeState()
         message = BotAuthoredMessage()
-        await accounts.perform_login_full(
+        await account_login.perform_login_full(
             message,
             mafile,
             SimpleNamespace(),
@@ -142,18 +142,18 @@ def test_email_login_publishes_typed_challenge_for_explicit_user(monkeypatch) ->
 
 def test_mobile_login_without_secret_publishes_mobile_challenge(monkeypatch) -> None:
     from guardbot.bot import pending_challenges
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import account_login
     from guardbot.bot.states import SteamChallengeFlow
 
     user_id = 602
-    client = Client(accounts.LoginConfirmType.mobile)
-    _patch_client_factory(monkeypatch, accounts, client)
+    client = Client(account_login.LoginConfirmType.mobile)
+    _patch_client_factory(monkeypatch, account_login, client)
     mafile = SimpleNamespace(id=1, account_name="account", shared_secret=None)
 
     async def scenario() -> None:
         state = FakeState()
         message = BotAuthoredMessage()
-        await accounts.perform_login_full(
+        await account_login.perform_login_full(
             message,
             mafile,
             SimpleNamespace(),
@@ -180,17 +180,17 @@ def test_mobile_login_without_secret_publishes_mobile_challenge(monkeypatch) -> 
 
 def test_login_prompt_failure_after_publish_clears_challenge(monkeypatch) -> None:
     from guardbot.bot import pending_challenges
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import account_login
 
     user_id = 603
-    client = Client(accounts.LoginConfirmType.email)
-    _patch_client_factory(monkeypatch, accounts, client)
+    client = Client(account_login.LoginConfirmType.email)
+    _patch_client_factory(monkeypatch, account_login, client)
     mafile = SimpleNamespace(id=1, account_name="account", shared_secret=None)
 
     async def scenario() -> None:
         state = FakeState()
         message = BotAuthoredMessage(Status(TimeoutError("prompt transport")))
-        await accounts.perform_login_full(
+        await account_login.perform_login_full(
             message,
             mafile,
             SimpleNamespace(),
@@ -207,18 +207,18 @@ def test_login_prompt_failure_after_publish_clears_challenge(monkeypatch) -> Non
 
 def test_login_prompt_cancellation_after_publish_clears_challenge(monkeypatch) -> None:
     from guardbot.bot import pending_challenges
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import account_login
 
     user_id = 604
-    client = Client(accounts.LoginConfirmType.email)
-    _patch_client_factory(monkeypatch, accounts, client)
+    client = Client(account_login.LoginConfirmType.email)
+    _patch_client_factory(monkeypatch, account_login, client)
     mafile = SimpleNamespace(id=1, account_name="account", shared_secret=None)
 
     async def scenario() -> None:
         state = FakeState()
         message = BotAuthoredMessage(Status(asyncio.CancelledError()))
         with pytest.raises(asyncio.CancelledError):
-            await accounts.perform_login_full(
+            await account_login.perform_login_full(
                 message,
                 mafile,
                 SimpleNamespace(),
@@ -234,7 +234,7 @@ def test_login_prompt_cancellation_after_publish_clears_challenge(monkeypatch) -
 
 def test_login_error_does_not_leak_exception_text(monkeypatch) -> None:
     from guardbot.bot import pending_challenges
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import account_login
 
     user_id = 605
     client = Client()
@@ -243,13 +243,13 @@ def test_login_error_does_not_leak_exception_text(monkeypatch) -> None:
         raise RuntimeError("proxy http://user:hunter2@10.0.0.1 refused")
 
     client.login = failing_login
-    _patch_client_factory(monkeypatch, accounts, client)
+    _patch_client_factory(monkeypatch, account_login, client)
     mafile = SimpleNamespace(id=1, account_name="account", shared_secret=None)
 
     async def scenario() -> None:
         state = FakeState()
         message = BotAuthoredMessage()
-        await accounts.perform_login_full(
+        await account_login.perform_login_full(
             message,
             mafile,
             SimpleNamespace(),
@@ -437,7 +437,7 @@ def test_document_during_code_challenge_is_deleted_and_challenge_kept() -> None:
 
 
 def test_callback_login_passes_clicking_user_and_state(monkeypatch) -> None:
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import account_login
 
     calls: list[dict] = []
 
@@ -467,13 +467,13 @@ def test_callback_login_passes_clicking_user_and_state(monkeypatch) -> None:
     async def login(*args, **kwargs) -> None:
         calls.append(kwargs)
 
-    monkeypatch.setattr(accounts, "AsyncSessionLocal", Session)
-    monkeypatch.setattr(accounts, "check_proxy_available", proxy)
-    monkeypatch.setattr(accounts, "get_owned_mafile", owned)
-    monkeypatch.setattr(accounts, "perform_login_full", login)
+    monkeypatch.setattr(account_login, "AsyncSessionLocal", Session)
+    monkeypatch.setattr(account_login, "check_proxy_available", proxy)
+    monkeypatch.setattr(account_login, "get_owned_mafile", owned)
+    monkeypatch.setattr(account_login, "perform_login_full", login)
 
     state = FakeState()
-    asyncio.run(accounts.callback_action_login(Callback(), state))
+    asyncio.run(account_login.callback_action_login(Callback(), state))
 
     assert len(calls) == 1
     assert calls[0]["telegram_id"] == 613
@@ -665,15 +665,15 @@ def test_mobile_challenge_success_does_not_claim_authenticator_inactive(
 
 def test_login_reports_missing_proxy_instead_of_hanging_status(monkeypatch) -> None:
     from guardbot.bot import pending_challenges
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import account_login
 
     user_id = 617
 
     async def create(*_args, **_kwargs):
-        raise accounts.ProxyRequiredError("proxy required")
+        raise account_login.ProxyRequiredError("proxy required")
 
     monkeypatch.setattr(
-        accounts.SteamSessionManager,
+        account_login.SteamSessionManager,
         "create_steam_client_from_db",
         create,
     )
@@ -682,7 +682,7 @@ def test_login_reports_missing_proxy_instead_of_hanging_status(monkeypatch) -> N
     async def scenario() -> None:
         state = FakeState()
         message = BotAuthoredMessage()
-        await accounts.perform_login_full(
+        await account_login.perform_login_full(
             message,
             mafile,
             SimpleNamespace(),
