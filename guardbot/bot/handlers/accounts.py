@@ -1363,7 +1363,16 @@ async def perform_login_full(
         parse_mode="HTML"
     )
 
-    client = await SteamSessionManager.create_steam_client_from_db(mafile, db_session)
+    try:
+        client = await SteamSessionManager.create_steam_client_from_db(mafile, db_session)
+    except ProxyRequiredError:
+        # The proxy disappeared after the caller's pre-check; no Steam request
+        # was sent. Report it instead of leaving "Выполняю вход..." hanging.
+        await status_msg.edit_text(
+            "❌ Для входа в Steam сначала настройте общий прокси или "
+            "уникальный прокси аккаунта."
+        )
+        return
     client_owned_by_handler = True
     challenge_id: str | None = None
 
@@ -2057,6 +2066,25 @@ async def receive_manual_steam_code(message: Message, state: FSMContext) -> None
                         [InlineKeyboardButton(
                             text="🔐 Подключить Steam Guard",
                             callback_data=f"setup_steamguard_{mafile_id}",
+                        )],
+                        [InlineKeyboardButton(
+                            text="📋 К аккаунту",
+                            callback_data=f"account_detail_{mafile_id}",
+                        )],
+                    ]
+                ),
+            )
+        elif kind == "mobile":
+            await status_message.edit_text(
+                "✅ <b>Вход выполнен успешно!</b>\n\n"
+                "🔐 Steam Guard на аккаунте включён, но ключей у бота нет. "
+                "Импортируйте maFile, чтобы бот сам генерировал коды.",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [InlineKeyboardButton(
+                            text="📤 Импортировать mafile",
+                            callback_data=f"import_mafile_for_{mafile_id}",
                         )],
                         [InlineKeyboardButton(
                             text="📋 К аккаунту",

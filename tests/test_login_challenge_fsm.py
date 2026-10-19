@@ -633,3 +633,70 @@ def test_login_command_handler_receives_fsm_context_through_aiogram(monkeypatch)
     assert len(calls) == 1
     assert calls[0]["telegram_id"] == 615
     assert calls[0]["state"] is state
+
+
+def test_mobile_challenge_success_does_not_claim_authenticator_inactive(
+    monkeypatch,
+) -> None:
+    from guardbot.bot import pending_challenges
+    from guardbot.bot.handlers import accounts
+    from guardbot.bot.states import SteamChallengeFlow
+
+    user_id = 616
+    client = Client()
+    saved: list = []
+    _patch_successful_save(monkeypatch, accounts, saved)
+
+    async def scenario() -> None:
+        state = FakeState()
+        await pending_challenges.publish_pending_challenge(
+            user_id=user_id,
+            mafile_id=42,
+            kind="mobile",
+            client=client,
+            state=state,
+            fsm_state=SteamChallengeFlow.waiting_code,
+            ttl_seconds=60,
+        )
+        message = _code_message(user_id)
+        await accounts.receive_manual_steam_code(message, state)
+
+        text, options = message.status.edits[-1]
+        assert "не активирован" not in text
+        assert "import_mafile_for_42" in _callback_datas(options["reply_markup"])
+
+    asyncio.run(scenario())
+
+
+def test_login_reports_missing_proxy_instead_of_hanging_status(monkeypatch) -> None:
+    from guardbot.bot import pending_challenges
+    from guardbot.bot.handlers import accounts
+
+    user_id = 617
+
+    async def create(*_args, **_kwargs):
+        raise accounts.ProxyRequiredError("proxy required")
+
+    monkeypatch.setattr(
+        accounts.SteamSessionManager,
+        "create_steam_client_from_db",
+        create,
+    )
+    mafile = SimpleNamespace(id=1, account_name="account", shared_secret=None)
+
+    async def scenario() -> None:
+        state = FakeState()
+        message = BotAuthoredMessage()
+        await accounts.perform_login_full(
+            message,
+            mafile,
+            SimpleNamespace(),
+            telegram_id=user_id,
+            state=state,
+        )
+        assert message.status.edits
+        assert "прокси" in message.status.edits[-1][0].lower()
+        assert pending_challenges.current_pending_challenge_token(user_id) is None
+        assert await state.get_state() is None
+
+    asyncio.run(scenario())

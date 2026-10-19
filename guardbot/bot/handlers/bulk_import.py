@@ -14,13 +14,11 @@ from guardbot.bot.runtime import (
     clear_user_workflows,
     delete_secret_message_or_abort,
     dp,
-    user_states,
 )
 from guardbot.bot.states import BulkImportFlow
 from guardbot.config import MAX_FILE_SIZE, MAX_ZIP_UNCOMPRESSED, logger
 from guardbot.database import AccountGroup, AsyncSessionLocal, Mafile
 from guardbot.security import encrypt_value
-from guardbot.services.session_manager import SteamSessionManager
 from sqlalchemy import func, select, text
 import asyncio
 import io
