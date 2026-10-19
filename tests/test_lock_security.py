@@ -1610,3 +1610,83 @@ def test_typed_secret_cleanup_resists_repeated_cancellation(
         assert await storage.get_state(key) is None
 
     asyncio.run(scenario())
+
+
+def test_locked_unlock_button_during_steam_challenge_closes_it_and_arms_unlock(
+    monkeypatch,
+) -> None:
+    from guardbot.bot import pending_challenges, runtime
+    from guardbot.bot.handlers import features
+    from guardbot.bot.states import SteamChallengeFlow, UnlockFlow
+
+    user = SimpleNamespace(bot_password="stored-hash", last_activity=None, lock_timeout=None)
+
+    class Result:
+        @staticmethod
+        def scalar_one_or_none():
+            return user
+
+    class Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+        async def execute(self, statement):
+            return Result()
+
+        async def commit(self) -> None:
+            return None
+
+    class CallbackMessage:
+        chat = SimpleNamespace(type="private")
+
+        def __init__(self) -> None:
+            self.edits = []
+
+        async def edit_text(self, text, **kwargs) -> None:
+            self.edits.append(text)
+
+    class Callback:
+        from_user = SimpleNamespace(id=987)
+        data = "unlock_bot"
+
+        def __init__(self) -> None:
+            self.message = CallbackMessage()
+            self.answer_calls = 0
+
+        async def answer(self, *args, **kwargs) -> None:
+            self.answer_calls += 1
+
+    monkeypatch.setattr(runtime, "AsyncSessionLocal", lambda: Session())
+
+    async def scenario() -> None:
+        state = _state()
+        client = _ChallengeClient()
+        await _publish_challenge(987, state, client)
+        callback = Callback()
+        event = SimpleNamespace(message=None, callback_query=callback, inline_query=None)
+        calls = []
+
+        async def handler(event, data):
+            calls.append(data["raw_state"])
+            await features.callback_unlock_bot(event.callback_query, data["state"])
+
+        try:
+            await runtime.LockCheckMiddleware()(
+                handler,
+                event,
+                {"raw_state": await state.get_state(), "state": state},
+            )
+            assert calls == [SteamChallengeFlow.waiting_code.state]
+            assert client.close_calls == 1
+            assert pending_challenges.current_pending_challenge_token(987) is None
+            assert await state.get_state() == UnlockFlow.waiting_password.state
+            assert await state.get_data() == {}
+            assert callback.answer_calls == 1
+            assert "РАЗБЛОКИРОВКА" in callback.message.edits[-1]
+        finally:
+            await pending_challenges.clear_pending_challenges_for_user(987, state)
+
+    asyncio.run(scenario())

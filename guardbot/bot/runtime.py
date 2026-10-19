@@ -48,7 +48,6 @@ import aiohttp
 import asyncio
 import json
 import math
-import weakref
 import re
 
 # ==================== БОТ ====================
