@@ -105,7 +105,7 @@ class _InputMessage:
 
 def test_toggle_callback_starts_typed_interval_flow_before_prompt(monkeypatch) -> None:
     from guardbot.bot import pending_challenges
-    from guardbot.bot.handlers import features
+    from guardbot.bot.handlers import trade_notifications
     from guardbot.bot.states import TradeNotificationFlow
 
     mafile = SimpleNamespace(
@@ -120,9 +120,9 @@ def test_toggle_callback_starts_typed_interval_flow_before_prompt(monkeypatch) -
     async def feedback(*_args, **_kwargs):
         return None
 
-    monkeypatch.setattr(features, "AsyncSessionLocal", lambda: _Session())
-    monkeypatch.setattr(features, "get_owned_mafile", owned)
-    monkeypatch.setattr(features, "callback_feedback", feedback)
+    monkeypatch.setattr(trade_notifications, "AsyncSessionLocal", lambda: _Session())
+    monkeypatch.setattr(trade_notifications, "get_owned_mafile", owned)
+    monkeypatch.setattr(trade_notifications, "callback_feedback", feedback)
 
     async def scenario() -> None:
         state = _state()
@@ -132,7 +132,7 @@ def test_toggle_callback_starts_typed_interval_flow_before_prompt(monkeypatch) -
         callback = _Callback(state)
 
         try:
-            await features.callback_trade_notify_toggle(callback, state)
+            await trade_notifications.callback_trade_notify_toggle(callback, state)
 
             assert client.close_calls == 1
             assert pending_challenges.current_pending_challenge_token(USER_ID) is None
@@ -154,7 +154,7 @@ def test_toggle_callback_starts_typed_interval_flow_before_prompt(monkeypatch) -
 
 
 def test_interval_callback_starts_update_flow_before_prompt(monkeypatch) -> None:
-    from guardbot.bot.handlers import features
+    from guardbot.bot.handlers import trade_notifications
     from guardbot.bot.states import TradeNotificationFlow
 
     mafile = SimpleNamespace(
@@ -169,16 +169,16 @@ def test_interval_callback_starts_update_flow_before_prompt(monkeypatch) -> None
     async def feedback(*_args, **_kwargs):
         return None
 
-    monkeypatch.setattr(features, "AsyncSessionLocal", lambda: _Session())
-    monkeypatch.setattr(features, "get_owned_mafile", owned)
-    monkeypatch.setattr(features, "callback_feedback", feedback)
+    monkeypatch.setattr(trade_notifications, "AsyncSessionLocal", lambda: _Session())
+    monkeypatch.setattr(trade_notifications, "get_owned_mafile", owned)
+    monkeypatch.setattr(trade_notifications, "callback_feedback", feedback)
 
     async def scenario() -> None:
         state = _state()
         callback = _Callback(state)
         callback.data = "trade_notify_interval_42"
 
-        await features.callback_trade_notify_interval(callback, state)
+        await trade_notifications.callback_trade_notify_interval(callback, state)
 
         assert await state.get_state() == TradeNotificationFlow.waiting_interval.state
         assert await state.get_data() == {"mafile_id": 42, "is_update": True}
@@ -190,7 +190,7 @@ def test_interval_callback_starts_update_flow_before_prompt(monkeypatch) -> None
 
 
 def test_toggle_off_normalizes_callback_before_redisplaying_menu(monkeypatch) -> None:
-    from guardbot.bot.handlers import features
+    from guardbot.bot.handlers import trade_notifications
 
     session = _Session()
     mafile = SimpleNamespace(id=42, trade_notifications=True)
@@ -205,17 +205,17 @@ def test_toggle_off_normalizes_callback_before_redisplaying_menu(monkeypatch) ->
     async def menu(callback, _state):
         menu_payloads.append(callback.data)
 
-    monkeypatch.setattr(features, "AsyncSessionLocal", lambda: session)
-    monkeypatch.setattr(features, "get_owned_mafile", owned)
-    monkeypatch.setattr(features, "callback_feedback", feedback)
-    monkeypatch.setattr(features, "callback_trade_notifications_menu", menu)
-    monkeypatch.setattr(features, "stop_trade_check_task", lambda _mafile_id: None)
+    monkeypatch.setattr(trade_notifications, "AsyncSessionLocal", lambda: session)
+    monkeypatch.setattr(trade_notifications, "get_owned_mafile", owned)
+    monkeypatch.setattr(trade_notifications, "callback_feedback", feedback)
+    monkeypatch.setattr(trade_notifications, "callback_trade_notifications_menu", menu)
+    monkeypatch.setattr(trade_notifications, "stop_trade_check_task", lambda _mafile_id: None)
 
     async def scenario() -> None:
         state = _state()
         callback = _Callback(state)
         callback.data = "trade_notify_toggle_42_off"
-        await features.callback_trade_notify_toggle(callback, state)
+        await trade_notifications.callback_trade_notify_toggle(callback, state)
 
     asyncio.run(scenario())
 
@@ -225,7 +225,7 @@ def test_toggle_off_normalizes_callback_before_redisplaying_menu(monkeypatch) ->
 
 
 def test_interval_input_enables_notifications_and_clears_before_reply(monkeypatch) -> None:
-    from guardbot.bot.handlers import features
+    from guardbot.bot.handlers import trade_notifications
     from guardbot.bot.states import TradeNotificationFlow
 
     session = _Session()
@@ -241,9 +241,9 @@ def test_interval_input_enables_notifications_and_clears_before_reply(monkeypatc
     async def owned(*_args, **_kwargs):
         return mafile
 
-    monkeypatch.setattr(features, "AsyncSessionLocal", lambda: session)
-    monkeypatch.setattr(features, "get_owned_mafile", owned)
-    monkeypatch.setattr(features, "start_trade_check_task", started.append)
+    monkeypatch.setattr(trade_notifications, "AsyncSessionLocal", lambda: session)
+    monkeypatch.setattr(trade_notifications, "get_owned_mafile", owned)
+    monkeypatch.setattr(trade_notifications, "start_trade_check_task", started.append)
 
     async def scenario() -> None:
         state = _state()
@@ -251,7 +251,7 @@ def test_interval_input_enables_notifications_and_clears_before_reply(monkeypatc
         await state.set_data({"mafile_id": 42, "is_update": False})
         message = _InputMessage(state, "5")
 
-        await features.process_trade_notification_interval(message, state)
+        await trade_notifications.process_trade_notification_interval(message, state)
 
         assert mafile.trade_notifications is True
         assert mafile.trade_notify_interval == 5
@@ -269,11 +269,11 @@ def test_interval_input_enables_notifications_and_clears_before_reply(monkeypatc
 
 @pytest.mark.parametrize("text", ["abc", "0", "61"])
 def test_invalid_interval_keeps_flow_for_retry(monkeypatch, text: str) -> None:
-    from guardbot.bot.handlers import features
+    from guardbot.bot.handlers import trade_notifications
     from guardbot.bot.states import TradeNotificationFlow
 
     monkeypatch.setattr(
-        features,
+        trade_notifications,
         "AsyncSessionLocal",
         lambda: pytest.fail("invalid input must not access the database"),
     )
@@ -284,7 +284,7 @@ def test_invalid_interval_keeps_flow_for_retry(monkeypatch, text: str) -> None:
         await state.set_data({"mafile_id": 42, "is_update": False})
         message = _InputMessage(state, text)
 
-        await features.process_trade_notification_interval(message, state)
+        await trade_notifications.process_trade_notification_interval(message, state)
 
         assert await state.get_state() == TradeNotificationFlow.waiting_interval.state
         assert await state.get_data() == {"mafile_id": 42, "is_update": False}
@@ -319,16 +319,16 @@ def test_notify_command_without_interval_starts_typed_flow(monkeypatch) -> None:
 
 
 def test_trade_interval_no_longer_uses_legacy_dispatch() -> None:
-    from guardbot.bot.handlers import commands, features, messages
+    from guardbot.bot.handlers import commands, trade_notifications, messages
 
     sources = "".join(
-        inspect.getsource(module) for module in (commands, features, messages)
+        inspect.getsource(module) for module in (commands, trade_notifications, messages)
     )
     assert '"waiting_trade_notify_interval"' not in sources
 
 
 def test_notifications_menu_cancels_typed_interval_before_render(monkeypatch) -> None:
-    from guardbot.bot.handlers import features
+    from guardbot.bot.handlers import trade_notifications
     from guardbot.bot.states import TradeNotificationFlow
 
     mafile = SimpleNamespace(
@@ -344,9 +344,9 @@ def test_notifications_menu_cancels_typed_interval_before_render(monkeypatch) ->
     async def feedback(*_args, **_kwargs):
         return None
 
-    monkeypatch.setattr(features, "AsyncSessionLocal", lambda: _Session())
-    monkeypatch.setattr(features, "get_owned_mafile", owned)
-    monkeypatch.setattr(features, "callback_feedback", feedback)
+    monkeypatch.setattr(trade_notifications, "AsyncSessionLocal", lambda: _Session())
+    monkeypatch.setattr(trade_notifications, "get_owned_mafile", owned)
+    monkeypatch.setattr(trade_notifications, "callback_feedback", feedback)
 
     async def scenario() -> None:
         state = _state()
@@ -355,7 +355,7 @@ def test_notifications_menu_cancels_typed_interval_before_render(monkeypatch) ->
         callback = _Callback(state)
         callback.data = "trade_notifications_menu_42"
 
-        await features.callback_trade_notifications_menu(callback, state)
+        await trade_notifications.callback_trade_notifications_menu(callback, state)
 
         assert await state.get_state() is None
         assert await state.get_data() == {}
@@ -365,11 +365,11 @@ def test_notifications_menu_cancels_typed_interval_before_render(monkeypatch) ->
 
 
 def test_interval_input_from_group_preserves_private_flow(monkeypatch) -> None:
-    from guardbot.bot.handlers import features
+    from guardbot.bot.handlers import trade_notifications
     from guardbot.bot.states import TradeNotificationFlow
 
     monkeypatch.setattr(
-        features,
+        trade_notifications,
         "AsyncSessionLocal",
         lambda: pytest.fail("cross-chat input must not access the database"),
     )
@@ -380,7 +380,7 @@ def test_interval_input_from_group_preserves_private_flow(monkeypatch) -> None:
         await state.set_data({"mafile_id": 42, "is_update": False})
         message = _InputMessage(state, "5", chat_type="group")
 
-        await features.process_trade_notification_interval(message, state)
+        await trade_notifications.process_trade_notification_interval(message, state)
 
         assert await state.get_state() == TradeNotificationFlow.waiting_interval.state
         assert await state.get_data() == {"mafile_id": 42, "is_update": False}
@@ -407,7 +407,7 @@ def test_malformed_interval_callbacks_clear_before_parsing(
     handler_name: str,
     callback_data: str,
 ) -> None:
-    from guardbot.bot.handlers import features
+    from guardbot.bot.handlers import trade_notifications
     from guardbot.bot.states import TradeNotificationFlow
 
     feedbacks = []
@@ -415,9 +415,9 @@ def test_malformed_interval_callbacks_clear_before_parsing(
     async def feedback(*args, **kwargs):
         feedbacks.append((args, kwargs))
 
-    monkeypatch.setattr(features, "callback_feedback", feedback)
+    monkeypatch.setattr(trade_notifications, "callback_feedback", feedback)
     monkeypatch.setattr(
-        features,
+        trade_notifications,
         "AsyncSessionLocal",
         lambda: pytest.fail("malformed callback must not access the database"),
     )
@@ -429,7 +429,7 @@ def test_malformed_interval_callbacks_clear_before_parsing(
         callback = _Callback(state)
         callback.data = callback_data
 
-        handler = getattr(features, handler_name)
+        handler = getattr(trade_notifications, handler_name)
         await handler(callback, state)
 
         assert await state.get_state() is None
@@ -452,11 +452,11 @@ def test_malformed_interval_state_clears_before_database(
     monkeypatch,
     state_data: dict,
 ) -> None:
-    from guardbot.bot.handlers import features
+    from guardbot.bot.handlers import trade_notifications
     from guardbot.bot.states import TradeNotificationFlow
 
     monkeypatch.setattr(
-        features,
+        trade_notifications,
         "AsyncSessionLocal",
         lambda: pytest.fail("malformed FSM data must not access the database"),
     )
@@ -467,7 +467,7 @@ def test_malformed_interval_state_clears_before_database(
         await state.set_data(state_data)
         message = _InputMessage(state, "5")
 
-        await features.process_trade_notification_interval(message, state)
+        await trade_notifications.process_trade_notification_interval(message, state)
 
         assert await state.get_state() is None
         assert await state.get_data() == {}
@@ -484,7 +484,7 @@ def test_dispatcher_rejects_cross_chat_interval_input(monkeypatch) -> None:
     from aiogram.types import Chat, Message, Update, User
 
     from guardbot.bot import runtime
-    from guardbot.bot.handlers import features
+    from guardbot.bot.handlers import trade_notifications
     from guardbot.bot.states import TradeNotificationFlow
 
     class Result:
@@ -530,7 +530,7 @@ def test_dispatcher_rejects_cross_chat_interval_input(monkeypatch) -> None:
         raise AssertionError("cross-chat interval must not access account storage")
 
     monkeypatch.setattr(runtime, "AsyncSessionLocal", LockSession)
-    monkeypatch.setattr(features, "AsyncSessionLocal", forbidden_feature_session)
+    monkeypatch.setattr(trade_notifications, "AsyncSessionLocal", forbidden_feature_session)
 
     async def scenario() -> None:
         bot = FakeBot()
