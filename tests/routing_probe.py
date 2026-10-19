@@ -4,6 +4,9 @@ Run in a fresh interpreter so the launcher's own import order builds the
 registry: ``python -B tests/routing_probe.py main|tgbot``. Only handler filters
 are evaluated (middleware is not), which is exactly the part that depends on
 registration order.
+
+Not modelled, because the bot uses neither: handlers raising ``SkipHandler``
+and per-router outer middlewares. Extend ``first_match`` before adding them.
 """
 
 import asyncio

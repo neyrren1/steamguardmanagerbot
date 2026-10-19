@@ -130,7 +130,7 @@ def test_probe_follows_aiogram_router_propagation() -> None:
     @dispatcher.message(F.text == "root")
     async def root_handler(message) -> None: ...
 
-    @gated.message()
+    @gated.message(F.caption == "gated")
     async def gated_handler(message) -> None: ...
 
     @nested.message()
@@ -154,7 +154,56 @@ def test_probe_follows_aiogram_router_propagation() -> None:
             await probe.first_match(
                 dispatcher, "message", probe._message(text="never"), raw_state=None, bot=bot
             ),
+            await probe.first_match(
+                dispatcher,
+                "message",
+                probe._message(text="never", document="a.txt", caption="gated"),
+                raw_state=None,
+                bot=bot,
+            ),
         )
 
-    # A failing root filter skips the router and everything nested in it.
-    assert asyncio.run(scenario()) == ("root_handler", "after_handler", "gated_handler")
+    # A failing root filter skips the router and everything nested in it; a
+    # passing one tries the router's own handlers, then its nested routers.
+    assert asyncio.run(scenario()) == (
+        "root_handler",
+        "after_handler",
+        "nested_handler",
+        "gated_handler",
+    )
+
+
+@pytest.mark.parametrize(
+    ("raw_state", "chat_type", "expect_hint"),
+    [
+        ("NoteFlow:waiting_note", "private", True),
+        ("LoginPasswordFlow:waiting_password", "private", True),
+        ("NoteFlow:waiting_note", "group", False),
+        (None, "private", False),
+    ],
+)
+def test_catch_all_explains_unknown_slash_text_inside_a_flow(
+    raw_state, chat_type, expect_hint
+) -> None:
+    import asyncio
+    from types import SimpleNamespace
+
+    from guardbot.bot.handlers import messages
+
+    class Message:
+        from_user = SimpleNamespace(id=987)
+        chat = SimpleNamespace(type=chat_type)
+        text = "/path/to/value"
+        caption = None
+        document = None
+
+        def __init__(self) -> None:
+            self.answers = []
+
+        async def answer(self, text, **kwargs) -> None:
+            self.answers.append(text)
+
+    message = Message()
+    asyncio.run(messages.handle_messages(message, raw_state=raw_state))
+    expected = [messages.UNKNOWN_COMMAND_IN_FLOW_HINT] if expect_hint else []
+    assert message.answers == expected
