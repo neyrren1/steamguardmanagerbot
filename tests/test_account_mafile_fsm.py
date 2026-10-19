@@ -82,7 +82,7 @@ class Callback:
 
 def test_account_mafile_callback_starts_typed_flow_before_prompt(monkeypatch) -> None:
     from guardbot.bot import pending_challenges, runtime
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import account_mafile
     from guardbot.bot.states import AccountMaFileImportFlow
 
     mafile = SimpleNamespace(id=42, account_name="account <unsafe>")
@@ -93,9 +93,9 @@ def test_account_mafile_callback_starts_typed_flow_before_prompt(monkeypatch) ->
     async def feedback(*_args, **_kwargs):
         return None
 
-    monkeypatch.setattr(accounts, "AsyncSessionLocal", Session)
-    monkeypatch.setattr(accounts, "get_owned_mafile", owned)
-    monkeypatch.setattr(accounts, "callback_feedback", feedback)
+    monkeypatch.setattr(account_mafile, "AsyncSessionLocal", Session)
+    monkeypatch.setattr(account_mafile, "get_owned_mafile", owned)
+    monkeypatch.setattr(account_mafile, "callback_feedback", feedback)
 
     async def scenario() -> None:
         state = _state()
@@ -105,7 +105,7 @@ def test_account_mafile_callback_starts_typed_flow_before_prompt(monkeypatch) ->
         callback = Callback(state, "import_mafile_for_42")
 
         try:
-            await accounts.callback_import_mafile_for(callback, state)
+            await account_mafile.callback_import_mafile_for(callback, state)
 
             assert client.close_calls == 1
             assert pending_challenges.current_pending_challenge_token(USER_ID) is None
@@ -125,7 +125,7 @@ def test_account_mafile_prompt_failure_rolls_back(
     monkeypatch,
     error: BaseException,
 ) -> None:
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import account_mafile
 
     async def owned(*_args, **_kwargs):
         return SimpleNamespace(id=42, account_name="account")
@@ -133,16 +133,16 @@ def test_account_mafile_prompt_failure_rolls_back(
     async def feedback(*_args, **_kwargs):
         return None
 
-    monkeypatch.setattr(accounts, "AsyncSessionLocal", Session)
-    monkeypatch.setattr(accounts, "get_owned_mafile", owned)
-    monkeypatch.setattr(accounts, "callback_feedback", feedback)
+    monkeypatch.setattr(account_mafile, "AsyncSessionLocal", Session)
+    monkeypatch.setattr(account_mafile, "get_owned_mafile", owned)
+    monkeypatch.setattr(account_mafile, "callback_feedback", feedback)
 
     async def scenario() -> None:
         state = _state()
         callback = Callback(state, "import_mafile_for_42", error)
 
         with pytest.raises(type(error)):
-            await accounts.callback_import_mafile_for(callback, state)
+            await account_mafile.callback_import_mafile_for(callback, state)
 
         assert await state.get_state() is None
         assert await state.get_data() == {}
@@ -165,14 +165,14 @@ def test_malformed_account_mafile_callback_is_rejected_before_database(
     monkeypatch,
     data: str,
 ) -> None:
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import account_mafile
 
     async def feedback(*_args, **_kwargs):
         return None
 
-    monkeypatch.setattr(accounts, "callback_feedback", feedback)
+    monkeypatch.setattr(account_mafile, "callback_feedback", feedback)
     monkeypatch.setattr(
-        accounts,
+        account_mafile,
         "AsyncSessionLocal",
         lambda: (_ for _ in ()).throw(AssertionError("database must not open")),
     )
@@ -180,7 +180,7 @@ def test_malformed_account_mafile_callback_is_rejected_before_database(
     async def scenario() -> None:
         state = _state()
         callback = Callback(state, data)
-        await accounts.callback_import_mafile_for(callback, state)
+        await account_mafile.callback_import_mafile_for(callback, state)
         assert await state.get_state() is None
         assert await state.get_data() == {}
 
@@ -252,7 +252,7 @@ class DownloadBot:
 def test_account_mafile_document_encrypts_and_clears_without_steam_network(
     monkeypatch,
 ) -> None:
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import account_mafile
     from guardbot.bot.states import AccountMaFileImportFlow
 
     payload = {
@@ -293,16 +293,21 @@ def test_account_mafile_document_encrypts_and_clears_without_steam_network(
     async def owned(*_args, **_kwargs):
         return mafile
 
-    monkeypatch.setattr(accounts, "bot", DownloadBot(json.dumps(payload).encode()))
-    monkeypatch.setattr(accounts, "AsyncSessionLocal", lambda: session)
-    monkeypatch.setattr(accounts, "get_owned_mafile", owned)
+    monkeypatch.setattr(account_mafile, "bot", DownloadBot(json.dumps(payload).encode()))
+    monkeypatch.setattr(account_mafile, "AsyncSessionLocal", lambda: session)
+    monkeypatch.setattr(account_mafile, "get_owned_mafile", owned)
     monkeypatch.setattr(
-        accounts,
+        account_mafile,
         "encrypt_value",
         lambda value: None if value is None else f"enc:{value}",
     )
+    # The owning module binds no Steam network client at all; the trap on the
+    # client module also catches a lazy import inside the handler.
+    from guardbot.steam import client as steam_client
+
+    assert not hasattr(account_mafile, "AsyncSteamMobile")
     monkeypatch.setattr(
-        accounts,
+        steam_client,
         "AsyncSteamMobile",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("import must not create a Steam network client")
@@ -315,7 +320,7 @@ def test_account_mafile_document_encrypts_and_clears_without_steam_network(
         await state.set_data({"mafile_id": 42})
         message = DocumentMessage(state)
 
-        await accounts.receive_account_mafile(message, state)
+        await account_mafile.receive_account_mafile(message, state)
 
         assert message.deleted is True
         assert session.committed is True
@@ -339,7 +344,7 @@ def test_account_mafile_document_encrypts_and_clears_without_steam_network(
 
 
 def test_account_mafile_without_session_preserves_existing_tokens(monkeypatch) -> None:
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import account_mafile
     from guardbot.bot.states import AccountMaFileImportFlow
 
     payload = {"account_name": "account", "shared_secret": "shared"}
@@ -365,11 +370,11 @@ def test_account_mafile_without_session_preserves_existing_tokens(monkeypatch) -
     async def owned(*_args, **_kwargs):
         return mafile
 
-    monkeypatch.setattr(accounts, "bot", DownloadBot(json.dumps(payload).encode()))
-    monkeypatch.setattr(accounts, "AsyncSessionLocal", lambda: session)
-    monkeypatch.setattr(accounts, "get_owned_mafile", owned)
+    monkeypatch.setattr(account_mafile, "bot", DownloadBot(json.dumps(payload).encode()))
+    monkeypatch.setattr(account_mafile, "AsyncSessionLocal", lambda: session)
+    monkeypatch.setattr(account_mafile, "get_owned_mafile", owned)
     monkeypatch.setattr(
-        accounts,
+        account_mafile,
         "encrypt_value",
         lambda value: None if value is None else f"enc:{value}",
     )
@@ -378,7 +383,7 @@ def test_account_mafile_without_session_preserves_existing_tokens(monkeypatch) -
         state = _state()
         await state.set_state(AccountMaFileImportFlow.waiting_document)
         await state.set_data({"mafile_id": 42})
-        await accounts.receive_account_mafile(DocumentMessage(state), state)
+        await account_mafile.receive_account_mafile(DocumentMessage(state), state)
 
         assert mafile.access_token == "existing-access"
         assert mafile.refresh_token == "existing-refresh"
@@ -388,7 +393,7 @@ def test_account_mafile_without_session_preserves_existing_tokens(monkeypatch) -
 
 
 def test_account_mafile_accepts_numeric_steamid() -> None:
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import account_mafile
 
     payload = json.dumps(
         {
@@ -398,7 +403,7 @@ def test_account_mafile_accepts_numeric_steamid() -> None:
         }
     ).encode()
 
-    _values, session_values = accounts._validated_account_mafile(payload)
+    _values, session_values = account_mafile._validated_account_mafile(payload)
 
     assert session_values["steamid"] == 76561198000000000
 
@@ -412,7 +417,7 @@ def test_account_mafile_accepts_numeric_steamid() -> None:
     ],
 )
 def test_account_mafile_rejects_steamid_outside_postgres_bigint(steamid) -> None:
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import account_mafile
 
     payload = json.dumps(
         {
@@ -423,11 +428,11 @@ def test_account_mafile_rejects_steamid_outside_postgres_bigint(steamid) -> None
     ).encode()
 
     with pytest.raises(ValueError, match="invalid SteamID"):
-        accounts._validated_account_mafile(payload)
+        account_mafile._validated_account_mafile(payload)
 
 
 def test_account_mafile_accepts_max_postgres_bigint_steamid() -> None:
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import account_mafile
 
     payload = json.dumps(
         {
@@ -437,7 +442,7 @@ def test_account_mafile_accepts_max_postgres_bigint_steamid() -> None:
         }
     ).encode()
 
-    _values, session_values = accounts._validated_account_mafile(payload)
+    _values, session_values = account_mafile._validated_account_mafile(payload)
 
     assert session_values["steamid"] == 9_223_372_036_854_775_807
 
@@ -445,15 +450,15 @@ def test_account_mafile_accepts_max_postgres_bigint_steamid() -> None:
 def test_account_mafile_deletion_failure_aborts_before_fsm_and_database(
     monkeypatch,
 ) -> None:
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import account_mafile
     from guardbot.bot.states import AccountMaFileImportFlow
 
     async def deletion_failed(_message):
         return False
 
-    monkeypatch.setattr(accounts, "delete_secret_message_or_abort", deletion_failed)
+    monkeypatch.setattr(account_mafile, "delete_secret_message_or_abort", deletion_failed)
     monkeypatch.setattr(
-        accounts,
+        account_mafile,
         "AsyncSessionLocal",
         lambda: (_ for _ in ()).throw(AssertionError("database must not open")),
     )
@@ -470,7 +475,7 @@ def test_account_mafile_deletion_failure_aborts_before_fsm_and_database(
 
         state.get_data = forbidden_get_data
         try:
-            await accounts.receive_account_mafile(message, state)
+            await account_mafile.receive_account_mafile(message, state)
         finally:
             state.get_data = original_get_data
 
@@ -493,11 +498,11 @@ def test_malformed_account_mafile_fsm_clears_before_database(
     monkeypatch,
     fsm_data: dict,
 ) -> None:
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import account_mafile
     from guardbot.bot.states import AccountMaFileImportFlow
 
     monkeypatch.setattr(
-        accounts,
+        account_mafile,
         "AsyncSessionLocal",
         lambda: (_ for _ in ()).throw(AssertionError("database must not open")),
     )
@@ -508,7 +513,7 @@ def test_malformed_account_mafile_fsm_clears_before_database(
         await state.set_data(fsm_data)
         message = DocumentMessage(state)
 
-        await accounts.receive_account_mafile(message, state)
+        await account_mafile.receive_account_mafile(message, state)
 
         assert message.deleted is True
         assert await state.get_state() is None
@@ -531,11 +536,11 @@ def test_invalid_account_mafile_input_stays_retryable_without_database(
     file_size: int,
     document: bool,
 ) -> None:
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import account_mafile
     from guardbot.bot.states import AccountMaFileImportFlow
 
     monkeypatch.setattr(
-        accounts,
+        account_mafile,
         "AsyncSessionLocal",
         lambda: (_ for _ in ()).throw(AssertionError("database must not open")),
     )
@@ -551,7 +556,7 @@ def test_invalid_account_mafile_input_stays_retryable_without_database(
             document=document,
         )
 
-        await accounts.receive_account_mafile(message, state)
+        await account_mafile.receive_account_mafile(message, state)
 
         assert message.deleted is True
         assert await state.get_state() == AccountMaFileImportFlow.waiting_document.state
@@ -621,11 +626,11 @@ def test_group_account_mafile_is_deleted_before_database(monkeypatch) -> None:
 
 
 def test_account_mafile_flow_no_longer_uses_legacy_dispatch() -> None:
-    from guardbot.bot.handlers import accounts, messages
+    from guardbot.bot.handlers import account_mafile, messages
 
     sources = "\n".join(
         [
-            inspect.getsource(accounts.callback_import_mafile_for),
+            inspect.getsource(account_mafile.callback_import_mafile_for),
             inspect.getsource(messages.handle_messages),
         ]
     )
@@ -633,8 +638,8 @@ def test_account_mafile_flow_no_longer_uses_legacy_dispatch() -> None:
 
 
 def test_account_mafile_import_has_no_time_sync_call() -> None:
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import account_mafile
 
-    source = inspect.getsource(accounts.receive_account_mafile)
+    source = inspect.getsource(account_mafile.receive_account_mafile)
     assert "align_time" not in source
     assert "require_proxy" not in source
