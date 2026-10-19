@@ -582,10 +582,13 @@ def test_bulk_callback_prompt_failure_rolls_back_and_closes_challenge(
 
 
 def test_bulk_non_text_fallback_precedes_legacy_catch_all() -> None:
-    from guardbot.bot import runtime
+    from guardbot.bot import routing, runtime
     from guardbot.bot.handlers.bulk_import import reject_bulk_import_non_text
     from guardbot.bot.handlers.messages import handle_messages
 
-    callbacks = [handler.callback for handler in runtime.dp.message.handlers]
+    callbacks = [
+        handler.callback
+        for handler in routing.ordered_handlers(runtime.dp, "message")
+    ]
 
     assert callbacks.index(reject_bulk_import_non_text) < callbacks.index(handle_messages)

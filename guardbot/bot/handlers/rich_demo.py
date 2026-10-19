@@ -1,6 +1,6 @@
 """Handlers for the opt-in Telegram Rich Message showcase."""
 
-from aiogram import F
+from aiogram import F, Router
 from aiogram.enums import ChatType
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -11,10 +11,12 @@ from guardbot.bot.rich_demo import (
     get_rich_demo_feedback,
     send_rich_demo,
 )
-from guardbot.bot.runtime import callback_feedback, clear_user_workflows, dp
+from guardbot.bot.runtime import callback_feedback, clear_user_workflows
+
+router = Router(name=__name__)
 
 
-@dp.message(Command("rich_demo"))
+@router.message(Command("rich_demo"))
 async def cmd_rich_demo(
     message: Message,
     state: FSMContext | None = None,
@@ -38,7 +40,7 @@ async def cmd_rich_demo(
     )
 
 
-@dp.callback_query(F.data.startswith(RICH_DEMO_CALLBACK_PREFIX))
+@router.callback_query(F.data.startswith(RICH_DEMO_CALLBACK_PREFIX))
 async def callback_rich_demo(callback: CallbackQuery) -> None:
     """Acknowledge demo callbacks without changing application state."""
     data = callback.data or ""

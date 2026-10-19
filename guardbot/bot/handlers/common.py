@@ -2,7 +2,7 @@
 
 from html import escape
 
-from aiogram import F
+from aiogram import F, Router
 from aiogram.enums import ChatType
 from aiogram.filters import Command, CommandObject
 from aiogram.fsm.context import FSMContext
@@ -12,7 +12,6 @@ from guardbot.bot.main_menu import build_main_menu_view, edit_main_menu, send_ma
 from guardbot.bot.runtime import (
     callback_feedback,
     clear_user_workflows,
-    dp,
     stop_trade_check_task,
 )
 from guardbot.bot.states import BulkImportFlow
@@ -24,7 +23,9 @@ from sqlalchemy import select
 import aiohttp
 import asyncio
 
-@dp.message(Command("delete_all_accs"))
+router = Router(name=__name__)
+
+@router.message(Command("delete_all_accs"))
 async def cmd_delete_all_accs(message: Message, command: CommandObject):
     """Удалить все аккаунты: /delete_all_accs confirm"""
     args = command.args.split() if command.args else []
@@ -72,9 +73,9 @@ async def cmd_delete_all_accs(message: Message, command: CommandObject):
         )
     )
 
-@dp.message(Command("start"))
-@dp.message(Command("help"))
-@dp.message(Command("menu"))
+@router.message(Command("start"))
+@router.message(Command("help"))
+@router.message(Command("menu"))
 async def cmd_start_help(message: Message, state: FSMContext | None = None):
     user = message.from_user
     if user is None:
@@ -114,7 +115,7 @@ async def cmd_start_help(message: Message, state: FSMContext | None = None):
         business_connection_id=message.business_connection_id,
     )
 
-@dp.message(Command("commands"))
+@router.message(Command("commands"))
 async def cmd_commands(message: Message, state: FSMContext | None = None):
     """Список всех команд бота"""
     if message.from_user is None:
@@ -217,8 +218,8 @@ async def cmd_commands(message: Message, state: FSMContext | None = None):
 
     await message.answer(commands_text, parse_mode="HTML", reply_markup=keyboard)
 
-@dp.message(Command("remove_proxy"))
-@dp.message(Command("delete_proxy"))
+@router.message(Command("remove_proxy"))
+@router.message(Command("delete_proxy"))
 async def cmd_remove_general_proxy(message: Message):
     """Удаление общего прокси"""
     telegram_id = message.from_user.id
@@ -254,9 +255,9 @@ async def cmd_remove_general_proxy(message: Message):
             parse_mode="HTML"
         )
 
-@dp.message(Command("import_bulk"))
-@dp.message(Command("mass_import"))
-@dp.message(Command("bulk_import"))
+@router.message(Command("import_bulk"))
+@router.message(Command("mass_import"))
+@router.message(Command("bulk_import"))
 async def cmd_bulk_import(message: Message, state: FSMContext):
     """Массовый импорт аккаунтов"""
     if message.from_user is None:
@@ -284,7 +285,7 @@ async def cmd_bulk_import(message: Message, state: FSMContext):
         raise
 
 
-@dp.callback_query(F.data == "bulk_import_menu")
+@router.callback_query(F.data == "bulk_import_menu")
 async def callback_bulk_import_menu(callback: CallbackQuery, state: FSMContext):
     """Кнопка массового импорта из меню"""
     await callback_feedback(callback)
@@ -318,7 +319,7 @@ async def callback_bulk_import_menu(callback: CallbackQuery, state: FSMContext):
         await clear_user_workflows(callback.from_user.id, state)
         raise
 
-@dp.callback_query(F.data == "cancel_state_to_start")
+@router.callback_query(F.data == "cancel_state_to_start")
 async def callback_cancel_state_to_start(
     callback: CallbackQuery,
     state: FSMContext | None = None,
@@ -351,7 +352,7 @@ async def callback_cancel_state_to_start(
     )
     await edit_main_menu(callback.message, view)
 
-@dp.message(Command("test_proxy"))
+@router.message(Command("test_proxy"))
 async def cmd_test_proxy(message: Message, command: CommandObject):
     args = command.args.split() if command.args else []
     telegram_id = message.from_user.id

@@ -3,7 +3,7 @@
 from html import escape
 from urllib.parse import quote
 
-from aiogram import F
+from aiogram import F, Router
 from aiogram.enums import ChatType
 from aiogram.fsm.context import FSMContext
 from aiogram.types import BufferedInputFile, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
@@ -15,7 +15,6 @@ from guardbot.bot.runtime import (
     check_proxy_available,
     close_owned_resource,
     clear_user_workflows,
-    dp,
     get_item_price,
     get_inventory_context_id,
     process_inventory_items_universal,
@@ -31,6 +30,8 @@ from guardbot.services.session_manager import SteamSessionManager
 from sqlalchemy import select, text
 import asyncio
 import re
+
+router = Router(name=__name__)
 
 
 _MAX_DATABASE_INTEGER = 2_147_483_647
@@ -143,7 +144,7 @@ def _inventory_page_callback(
 
 
 # ==================== НОВЫЕ ОБРАБОТЧИКИ ====================
-@dp.callback_query(F.data.startswith("trades_menu_"))
+@router.callback_query(F.data.startswith("trades_menu_"))
 @validated_callback_data(r"trades_menu_(?P<db_id>[1-9][0-9]{0,9})")
 async def callback_trades_menu(callback: CallbackQuery):
     """Меню трейдов с новой клавиатурой"""
@@ -202,7 +203,7 @@ async def callback_trades_menu(callback: CallbackQuery):
     )
     await callback_feedback(callback)
 
-@dp.callback_query(F.data.startswith("trade_notifications_menu_"))
+@router.callback_query(F.data.startswith("trade_notifications_menu_"))
 @validated_callback_data(
     r"trade_notifications_menu_(?P<db_id>[1-9][0-9]{0,9})",
     clear_workflows_on_reject=True,
@@ -320,7 +321,7 @@ async def _start_trade_notification_interval_flow(
         raise
 
 
-@dp.message(
+@router.message(
     TradeNotificationFlow.waiting_interval,
     F.text,
     ~F.text.startswith("/"),
@@ -393,7 +394,7 @@ async def process_trade_notification_interval(
 
 
 # Обновите callback_trade_notify_toggle:
-@dp.callback_query(F.data.startswith("trade_notify_toggle_"))
+@router.callback_query(F.data.startswith("trade_notify_toggle_"))
 @validated_callback_data(
     r"trade_notify_toggle_(?P<db_id>[1-9][0-9]{0,9})_(?:on|off)",
     clear_workflows_on_reject=True,
@@ -442,7 +443,7 @@ async def callback_trade_notify_toggle(
             await callback_trade_notifications_menu(callback, state)
 
 
-@dp.callback_query(F.data.startswith("trade_notify_interval_"))
+@router.callback_query(F.data.startswith("trade_notify_interval_"))
 @validated_callback_data(
     r"trade_notify_interval_(?P<db_id>[1-9][0-9]{0,9})",
     clear_workflows_on_reject=True,
@@ -478,7 +479,7 @@ async def callback_trade_notify_interval(
         )
         await callback_feedback(callback)
 
-@dp.callback_query(F.data.startswith("tradelink_"))
+@router.callback_query(F.data.startswith("tradelink_"))
 @validated_callback_data(r"tradelink_(?P<db_id>[1-9][0-9]{0,9})")
 async def callback_tradelink(callback: CallbackQuery):
     """Получение трейд-ссылки"""
@@ -518,7 +519,7 @@ async def callback_tradelink(callback: CallbackQuery):
 
 
 # ---------- ИНВЕНТАРЬ ----------
-@dp.callback_query(F.data.startswith("inventory_menu_"))
+@router.callback_query(F.data.startswith("inventory_menu_"))
 @validated_callback_data(
     r"inventory_menu_(?P<db_id>[1-9][0-9]{0,9})",
     clear_workflows_on_reject=True,
@@ -567,7 +568,7 @@ async def callback_inventory_menu(
 
 
 
-@dp.callback_query(F.data.startswith("inventory_app_"))
+@router.callback_query(F.data.startswith("inventory_app_"))
 @validated_callback_data(
     r"inventory_app_(?P<db_id>[1-9][0-9]{0,9})_"
     r"(?P<int32_app>730|570|440|753)_"
@@ -757,7 +758,7 @@ async def callback_inventory_app(callback: CallbackQuery):
             await client.close()
             await callback_feedback(callback)
 
-@dp.callback_query(F.data.startswith("item_detail_"))
+@router.callback_query(F.data.startswith("item_detail_"))
 @validated_callback_data(
     r"item_detail_(?P<db_id>[1-9][0-9]{0,9})_"
     r"(?P<int32_app>[1-9][0-9]{0,9})_"
@@ -1133,7 +1134,7 @@ def process_inventory_items(data: dict) -> list:
 
     return items
 
-@dp.callback_query(F.data.startswith("confirmations_menu_"))
+@router.callback_query(F.data.startswith("confirmations_menu_"))
 @validated_callback_data(r"confirmations_menu_(?P<db_id>[1-9][0-9]{0,9})")
 async def callback_confirmations_menu(callback: CallbackQuery, send_new: bool = False):
     """Просмотр подтверждений"""
@@ -1436,7 +1437,7 @@ async def callback_confirmations_menu(callback: CallbackQuery, send_new: bool = 
 
 # 🔥 Обработчики для подтверждения/отмены по одному
 
-@dp.callback_query(F.data.startswith("confirm_single_"))
+@router.callback_query(F.data.startswith("confirm_single_"))
 @validated_callback_data(
     r"confirm_single_(?P<db_id>[1-9][0-9]{0,9})_"
     r"(?P<uint64_conf>[1-9][0-9]{0,19})"
@@ -1498,7 +1499,7 @@ async def callback_confirm_single(callback: CallbackQuery):
         finally:
             await client.close()
 
-@dp.callback_query(F.data.startswith("cancel_single_"))
+@router.callback_query(F.data.startswith("cancel_single_"))
 @validated_callback_data(
     r"cancel_single_(?P<db_id>[1-9][0-9]{0,9})_"
     r"(?P<uint64_conf>[1-9][0-9]{0,19})"
@@ -1567,7 +1568,7 @@ async def callback_cancel_single(callback: CallbackQuery):
         finally:
             await client.close()
 
-@dp.callback_query(F.data.startswith("confirm_all_"))
+@router.callback_query(F.data.startswith("confirm_all_"))
 @validated_callback_data(r"confirm_all_(?P<db_id>[1-9][0-9]{0,9})")
 async def callback_confirm_all(callback: CallbackQuery):
     """Подтвердить все ожидающие действия"""
@@ -1664,7 +1665,7 @@ async def callback_confirm_all(callback: CallbackQuery):
             await client.close()
 
 
-@dp.callback_query(F.data.startswith("cancel_all_"))
+@router.callback_query(F.data.startswith("cancel_all_"))
 @validated_callback_data(r"cancel_all_(?P<db_id>[1-9][0-9]{0,9})")
 async def callback_cancel_all(callback: CallbackQuery):
     """Отменить все ожидающие действия"""
@@ -1998,7 +1999,7 @@ async def fetch_and_display_trades(callback: CallbackQuery, mafile_id: int, clie
             )
         )
 
-@dp.callback_query(F.data.startswith("trade_accept_"))
+@router.callback_query(F.data.startswith("trade_accept_"))
 @validated_callback_data(
     r"trade_accept_(?P<db_id>[1-9][0-9]{0,9})_"
     r"(?P<uint64_trade>[1-9][0-9]{0,19})"
@@ -2318,7 +2319,7 @@ async def callback_trade_accept(callback: CallbackQuery):
             await client.close()
             await callback_feedback(callback)
 
-@dp.callback_query(F.data.startswith("trade_decline_"))
+@router.callback_query(F.data.startswith("trade_decline_"))
 @validated_callback_data(
     r"trade_decline_(?P<db_id>[1-9][0-9]{0,9})_"
     r"(?P<uint64_trade>[1-9][0-9]{0,19})"
@@ -2458,7 +2459,7 @@ async def callback_trade_decline(callback: CallbackQuery):
             await callback_feedback(callback)
 
 
-@dp.callback_query(F.data.startswith("trade_cancel_"))
+@router.callback_query(F.data.startswith("trade_cancel_"))
 @validated_callback_data(
     r"trade_cancel_(?P<db_id>[1-9][0-9]{0,9})_"
     r"(?P<uint64_trade>[1-9][0-9]{0,19})"
@@ -2511,7 +2512,7 @@ async def callback_trade_cancel_outgoing(callback: CallbackQuery):
 
 
 
-@dp.callback_query(F.data.startswith("trades_incoming_active_"))
+@router.callback_query(F.data.startswith("trades_incoming_active_"))
 @validated_callback_data(
     r"trades_incoming_active_(?P<db_id>[1-9][0-9]{0,9})_"
     r"(?P<int32_page>[1-9][0-9]{0,9})"
@@ -2536,7 +2537,7 @@ async def callback_trades_incoming_active(callback: CallbackQuery):
             await callback_feedback(callback)
 
 
-@dp.callback_query(F.data.startswith("trades_incoming_history_"))
+@router.callback_query(F.data.startswith("trades_incoming_history_"))
 @validated_callback_data(
     r"trades_incoming_history_(?P<db_id>[1-9][0-9]{0,9})_"
     r"(?P<int32_page>[1-9][0-9]{0,9})"
@@ -2561,7 +2562,7 @@ async def callback_trades_incoming_history(callback: CallbackQuery):
             await callback_feedback(callback)
 
 
-@dp.callback_query(F.data.startswith("trades_outgoing_active_"))
+@router.callback_query(F.data.startswith("trades_outgoing_active_"))
 @validated_callback_data(
     r"trades_outgoing_active_(?P<db_id>[1-9][0-9]{0,9})_"
     r"(?P<int32_page>[1-9][0-9]{0,9})"
@@ -2586,7 +2587,7 @@ async def callback_trades_outgoing_active(callback: CallbackQuery):
             await callback_feedback(callback)
 
 
-@dp.callback_query(F.data.startswith("trades_outgoing_history_"))
+@router.callback_query(F.data.startswith("trades_outgoing_history_"))
 @validated_callback_data(
     r"trades_outgoing_history_(?P<db_id>[1-9][0-9]{0,9})_"
     r"(?P<int32_page>[1-9][0-9]{0,9})"
@@ -2611,7 +2612,7 @@ async def callback_trades_outgoing_history(callback: CallbackQuery):
             await callback_feedback(callback)
 
 
-@dp.callback_query(F.data.startswith("trade_detail_full_"))
+@router.callback_query(F.data.startswith("trade_detail_full_"))
 @validated_callback_data(
     r"trade_detail_full_(?P<db_id>[1-9][0-9]{0,9})_"
     r"(?P<uint64_trade>[1-9][0-9]{0,19})_(?:incoming|outgoing)"
@@ -2808,7 +2809,7 @@ async def callback_trade_detail_full(callback: CallbackQuery):
             await callback_feedback(callback)
 
 
-@dp.callback_query(F.data.startswith("back_to_trades_list_"))
+@router.callback_query(F.data.startswith("back_to_trades_list_"))
 @validated_callback_data(
     r"back_to_trades_list_(?P<db_id>[1-9][0-9]{0,9})_(?:incoming|outgoing)"
 )
@@ -2918,7 +2919,7 @@ async def _start_bot_password_prompt(
         raise
 
 
-@dp.callback_query(F.data == "set_password")
+@router.callback_query(F.data == "set_password")
 async def callback_set_password(callback: CallbackQuery, state: FSMContext):
     """Запрос на установку пароля"""
     await _start_bot_password_prompt(
@@ -2934,7 +2935,7 @@ async def callback_set_password(callback: CallbackQuery, state: FSMContext):
     )
 
 
-@dp.callback_query(F.data == "change_password")
+@router.callback_query(F.data == "change_password")
 async def callback_change_password(callback: CallbackQuery, state: FSMContext):
     """Запрос на изменение пароля"""
     await _start_bot_password_prompt(
@@ -2950,7 +2951,7 @@ async def callback_change_password(callback: CallbackQuery, state: FSMContext):
     )
 
 
-@dp.callback_query(F.data == "remove_password")
+@router.callback_query(F.data == "remove_password")
 async def callback_remove_password(callback: CallbackQuery, state: FSMContext):
     """Запрос на удаление пароля"""
     await _start_bot_password_prompt(
@@ -2965,7 +2966,7 @@ async def callback_remove_password(callback: CallbackQuery, state: FSMContext):
     )
 
 
-@dp.callback_query(F.data == "cancel_password_to_settings")
+@router.callback_query(F.data == "cancel_password_to_settings")
 async def callback_cancel_password_to_settings(
     callback: CallbackQuery,
     state: FSMContext,
@@ -2978,7 +2979,7 @@ async def callback_cancel_password_to_settings(
     await update_settings_message(callback.message, callback.from_user.id)
 
 
-@dp.callback_query(F.data == "lock_bot")
+@router.callback_query(F.data == "lock_bot")
 async def callback_lock_bot(callback: CallbackQuery, state: FSMContext):
     """Мгновенная блокировка бота"""
     telegram_id = callback.from_user.id
@@ -3010,7 +3011,7 @@ async def callback_lock_bot(callback: CallbackQuery, state: FSMContext):
     )
 
 
-@dp.callback_query(F.data == "unlock_bot")
+@router.callback_query(F.data == "unlock_bot")
 async def callback_unlock_bot(callback: CallbackQuery, state: FSMContext):
     """Запрос пароля для разблокировки"""
     if await _reject_secret_callback_outside_private_chat(callback):
@@ -3036,7 +3037,7 @@ async def callback_unlock_bot(callback: CallbackQuery, state: FSMContext):
         raise
 
 
-@dp.callback_query(F.data == "set_lock_timeout")
+@router.callback_query(F.data == "set_lock_timeout")
 async def callback_set_lock_timeout(callback: CallbackQuery):
     """Настройка таймаута автоблокировки"""
     telegram_id = callback.from_user.id

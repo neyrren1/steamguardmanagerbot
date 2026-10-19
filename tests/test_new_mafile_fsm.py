@@ -422,7 +422,7 @@ def test_registered_new_mafile_handlers_do_not_match_commands() -> None:
     }
     handlers = [
         handler
-        for handler in imports.dp.message.handlers
+        for handler in imports.router.message.handlers
         if handler.callback in callbacks
     ]
     assert len(handlers) == 2

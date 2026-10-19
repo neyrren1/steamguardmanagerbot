@@ -339,11 +339,14 @@ def test_removed_login_password_legacy_state_has_no_production_references() -> N
 
 
 def test_login_password_non_text_fallback_precedes_legacy_catch_all() -> None:
-    from guardbot.bot import runtime
+    from guardbot.bot import routing, runtime
     from guardbot.bot.handlers.accounts import reject_login_password_non_text
     from guardbot.bot.handlers.messages import handle_messages
 
-    callbacks = [handler.callback for handler in runtime.dp.message.handlers]
+    callbacks = [
+        handler.callback
+        for handler in routing.ordered_handlers(runtime.dp, "message")
+    ]
 
     assert callbacks.index(reject_login_password_non_text) < callbacks.index(
         handle_messages

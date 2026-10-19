@@ -7,7 +7,7 @@ from contextlib import suppress
 from html import escape
 from typing import cast
 
-from aiogram import F
+from aiogram import F, Router
 from aiogram.enums import ChatType
 from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import Command, CommandObject
@@ -32,7 +32,6 @@ from guardbot.bot.runtime import (
     close_owned_resource,
     delete_secret_message_or_abort,
     bot,
-    dp,
     require_proxy,
 )
 from guardbot.bot.states import (
@@ -55,6 +54,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional
 import time
 
+router = Router(name=__name__)
+
 _MAX_ACCOUNT_MAFILE_BYTES = 1_048_576
 _MAX_MAFILE_VALUE_LENGTH = 65_536
 _MAX_DATABASE_INTEGER = 2_147_483_647
@@ -73,7 +74,7 @@ _ACCOUNT_MAFILE_ENCRYPTED_FIELDS = (
     "uri",
 )
 
-@dp.callback_query(F.data == "info")
+@router.callback_query(F.data == "info")
 async def callback_info(callback: CallbackQuery):
     user = callback.from_user
 
@@ -111,7 +112,7 @@ async def callback_info(callback: CallbackQuery):
     await callback_feedback(callback)
 
 
-@dp.callback_query(F.data == "instruction")
+@router.callback_query(F.data == "instruction")
 async def callback_instruction(callback: CallbackQuery):
     instruction_text = (
         "<b>🌐 Настройка прокси (ОБЯЗАТЕЛЬНО):</b>\n"
@@ -149,7 +150,7 @@ async def callback_instruction(callback: CallbackQuery):
     await callback.message.edit_text(instruction_text, parse_mode="HTML", reply_markup=keyboard)
     await callback_feedback(callback)
 
-@dp.callback_query(F.data == "settings")
+@router.callback_query(F.data == "settings")
 async def callback_settings(callback: CallbackQuery):
     """Настройки бота"""
     await callback_feedback(callback)
@@ -228,7 +229,7 @@ async def update_settings_message(message: Message, telegram_id: int) -> None:
 
     await message.edit_text(settings_text, parse_mode="HTML", reply_markup=keyboard)
 
-@dp.callback_query(F.data == "mafile_instruction")
+@router.callback_query(F.data == "mafile_instruction")
 async def callback_mafile_instruction(callback: CallbackQuery):
     """Инструкция по импорту mafile"""
     await callback.message.edit_text(
@@ -252,14 +253,14 @@ async def callback_mafile_instruction(callback: CallbackQuery):
     )
     await callback_feedback(callback)
 
-@dp.callback_query(F.data == "my_accounts")
+@router.callback_query(F.data == "my_accounts")
 async def callback_my_accounts(callback: CallbackQuery):
     """Список аккаунтов с пагинацией"""
     await callback_feedback(callback)
     await show_accounts_page(callback, page=0)
 
 
-@dp.callback_query(F.data.startswith("accounts_page_"))
+@router.callback_query(F.data.startswith("accounts_page_"))
 async def callback_accounts_page(callback: CallbackQuery):
     """Переключение страниц аккаунтов"""
     page = _parse_nonnegative_callback_id(callback.data, "accounts_page_")
@@ -403,12 +404,12 @@ async def show_accounts_page(callback: CallbackQuery, page: int, group_id: Optio
         await callback.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
 
 
-@dp.callback_query(F.data == "page_info")
+@router.callback_query(F.data == "page_info")
 async def callback_page_info(callback: CallbackQuery):
     """Заглушка для кнопки с номером страницы"""
     await callback_feedback(callback, "Это текущая страница", show_alert=False)
 
-@dp.callback_query(F.data.startswith("account_detail_"))
+@router.callback_query(F.data.startswith("account_detail_"))
 @validated_callback_data(r"account_detail_(?P<db_id>[1-9][0-9]{0,9})")
 async def callback_account_detail(callback: CallbackQuery):
     mafile_id = int(callback.data.split("_")[2])
@@ -548,7 +549,7 @@ async def callback_account_detail(callback: CallbackQuery):
         await callback.message.edit_text(detail_text, parse_mode="HTML", reply_markup=keyboard)
         await callback_feedback(callback)
 
-@dp.callback_query(F.data.startswith("account_settings_"))
+@router.callback_query(F.data.startswith("account_settings_"))
 @validated_callback_data(r"account_settings_(?P<db_id>[1-9][0-9]{0,9})")
 async def callback_account_settings(callback: CallbackQuery):
     """Настройки конкретного аккаунта"""
@@ -564,7 +565,7 @@ async def callback_account_settings(callback: CallbackQuery):
         await update_account_settings_message(callback.message, mafile, session)
         await callback_feedback(callback)
 
-@dp.callback_query(F.data.startswith("toggle_unique_proxy_"))
+@router.callback_query(F.data.startswith("toggle_unique_proxy_"))
 @validated_callback_data(
     r"toggle_unique_proxy_(?P<db_id>[1-9][0-9]{0,9})_(?:on|off)"
 )
@@ -775,7 +776,7 @@ async def update_account_settings_message(message: Message, mafile: Mafile, db_s
 
     await message.edit_text(settings_text, parse_mode="HTML", reply_markup=keyboard)
 
-@dp.callback_query(F.data.startswith("change_note_"))
+@router.callback_query(F.data.startswith("change_note_"))
 @validated_callback_data(r"change_note_(?P<db_id>[1-9][0-9]{0,9})")
 async def callback_change_note(callback: CallbackQuery, state: FSMContext):
     """Запрос на изменение заметки к аккаунту"""
@@ -821,7 +822,7 @@ async def callback_change_note(callback: CallbackQuery, state: FSMContext):
     await callback_feedback(callback)
 
 
-@dp.message(NoteFlow.waiting_note, F.text, ~F.text.startswith("/"))
+@router.message(NoteFlow.waiting_note, F.text, ~F.text.startswith("/"))
 async def process_account_note(message: Message, state: FSMContext):
     """Persist an encrypted account note from the typed flow."""
     if message.chat.type != ChatType.PRIVATE:
@@ -878,7 +879,7 @@ async def process_account_note(message: Message, state: FSMContext):
         )
 
 
-@dp.message(NoteFlow.waiting_note, NonCommandInputFilter())
+@router.message(NoteFlow.waiting_note, NonCommandInputFilter())
 async def reject_note_non_text(message: Message, state: FSMContext) -> None:
     """Keep note documents from falling through to the legacy import handler."""
     if message.chat.type != ChatType.PRIVATE:
@@ -996,7 +997,7 @@ async def _start_unique_proxy_prompt(
         raise
 
 
-@dp.callback_query(F.data.startswith("change_unique_proxy_"))
+@router.callback_query(F.data.startswith("change_unique_proxy_"))
 async def callback_change_unique_proxy(
     callback: CallbackQuery,
     state: FSMContext,
@@ -1009,7 +1010,7 @@ async def callback_change_unique_proxy(
         include_current=True,
     )
 
-@dp.callback_query(F.data.startswith("cancel_state_to_settings_"))
+@router.callback_query(F.data.startswith("cancel_state_to_settings_"))
 async def callback_cancel_state_to_settings(
     callback: CallbackQuery,
     state: FSMContext,
@@ -1038,7 +1039,7 @@ async def callback_cancel_state_to_settings(
 
         await update_account_settings_message(callback.message, mafile, session)
 
-@dp.callback_query(F.data.startswith("set_unique_proxy_"))
+@router.callback_query(F.data.startswith("set_unique_proxy_"))
 async def callback_set_unique_proxy(
     callback: CallbackQuery,
     state: FSMContext,
@@ -1051,7 +1052,7 @@ async def callback_set_unique_proxy(
         include_current=False,
     )
 
-@dp.message(ProxyFlow.waiting_proxy, NonCommandInputFilter())
+@router.message(ProxyFlow.waiting_proxy, NonCommandInputFilter())
 async def receive_unique_proxy(message: Message, state: FSMContext) -> None:
     """Persist an account proxy without ever placing credentials in FSM."""
     if message.chat.type != ChatType.PRIVATE:
@@ -1165,7 +1166,7 @@ async def receive_unique_proxy(message: Message, state: FSMContext) -> None:
         )
 
 
-@dp.callback_query(F.data.startswith("remove_account_proxy_"))
+@router.callback_query(F.data.startswith("remove_account_proxy_"))
 @validated_callback_data(r"remove_account_proxy_(?P<db_id>[1-9][0-9]{0,9})")
 async def callback_remove_account_proxy(callback: CallbackQuery):
     """Удаление уникального прокси с аккаунта"""
@@ -1184,7 +1185,7 @@ async def callback_remove_account_proxy(callback: CallbackQuery):
         await callback_feedback(callback, "✅ Уникальный прокси удален, используется общий", show_alert=True)
         await update_account_settings_message(callback.message, mafile, session)
 
-@dp.callback_query(F.data.startswith("test_account_proxy_"))
+@router.callback_query(F.data.startswith("test_account_proxy_"))
 @validated_callback_data(r"test_account_proxy_(?P<db_id>[1-9][0-9]{0,9})")
 async def callback_test_account_proxy(callback: CallbackQuery):
     """Тестирование прокси аккаунта"""
@@ -1257,7 +1258,7 @@ async def callback_test_account_proxy(callback: CallbackQuery):
             )
 
 
-@dp.callback_query(F.data.startswith("action_get_code_"))
+@router.callback_query(F.data.startswith("action_get_code_"))
 @validated_callback_data(r"action_get_code_(?P<db_id>[1-9][0-9]{0,9})")
 async def callback_action_get_code(callback: CallbackQuery):
     """Получение кода по кнопке из деталей аккаунта"""
@@ -1277,7 +1278,7 @@ async def callback_action_get_code(callback: CallbackQuery):
         await callback_feedback(callback, "Генерирую код...")
         await generate_and_send_code(callback.message, mafile)
 
-@dp.callback_query(F.data.startswith("action_login_"))
+@router.callback_query(F.data.startswith("action_login_"))
 @validated_callback_data(r"action_login_(?P<db_id>[1-9][0-9]{0,9})")
 async def callback_action_login(callback: CallbackQuery, state: FSMContext):
     """Вход в аккаунт по паролю (полный вход)"""
@@ -1562,7 +1563,7 @@ async def perform_login_full(
                 logger.warning("Failed to close Steam login client for user_id=%s", telegram_id)
 
 
-@dp.callback_query(F.data.startswith("enter_password_"))
+@router.callback_query(F.data.startswith("enter_password_"))
 @validated_callback_data(r"enter_password_(?P<db_id>[1-9][0-9]{0,9})")
 async def callback_enter_password(callback: CallbackQuery, state: FSMContext):
     """Запрос пароля для входа"""
@@ -1598,7 +1599,7 @@ async def callback_enter_password(callback: CallbackQuery, state: FSMContext):
             raise
 
 
-@dp.message(
+@router.message(
     LoginPasswordFlow.waiting_password,
     F.text,
     ~F.text.startswith("/"),
@@ -1654,7 +1655,7 @@ async def receive_login_password(message: Message, state: FSMContext) -> None:
         )
 
 
-@dp.message(LoginPasswordFlow.waiting_password, NonCommandInputFilter())
+@router.message(LoginPasswordFlow.waiting_password, NonCommandInputFilter())
 async def reject_login_password_non_text(
     message: Message,
     state: FSMContext,
@@ -1669,7 +1670,7 @@ async def reject_login_password_non_text(
         return
     await message.answer("❌ Отправьте пароль текстом или используйте /cancel.")
 
-@dp.callback_query(F.data.startswith("try_refresh_"))
+@router.callback_query(F.data.startswith("try_refresh_"))
 @validated_callback_data(r"try_refresh_(?P<db_id>[1-9][0-9]{0,9})")
 async def callback_try_refresh(callback: CallbackQuery):
     """Попытка входа через refresh token без пароля"""
@@ -1797,7 +1798,7 @@ async def callback_try_refresh(callback: CallbackQuery):
         finally:
             await client.close()
 
-@dp.callback_query(F.data.startswith("manual_code_"))
+@router.callback_query(F.data.startswith("manual_code_"))
 @validated_callback_data(r"manual_code_(?P<db_id>[1-9][0-9]{0,9})")
 async def callback_manual_code(callback: CallbackQuery, state: FSMContext):
     """Ручной ввод Steam Guard кода"""
@@ -1904,7 +1905,7 @@ async def callback_manual_code(callback: CallbackQuery, state: FSMContext):
         await callback_message.edit_text("❌ Не удалось начать ввод Steam Guard кода.")
 
 
-@dp.message(
+@router.message(
     SteamChallengeFlow.waiting_code,
     F.text,
     NonCommandInputFilter(),
@@ -2164,7 +2165,7 @@ async def receive_manual_steam_code(message: Message, state: FSMContext) -> None
         )
 
 
-@dp.message(SteamChallengeFlow.waiting_code, F.document, NonCommandInputFilter())
+@router.message(SteamChallengeFlow.waiting_code, F.document, NonCommandInputFilter())
 async def reject_challenge_document(message: Message, state: FSMContext) -> None:
     """A file sent at the code prompt may be a maFile: delete it, keep the challenge.
 
@@ -2183,7 +2184,7 @@ async def reject_challenge_document(message: Message, state: FSMContext) -> None
     )
 
 
-@dp.callback_query(F.data.startswith("import_mafile_for_"))
+@router.callback_query(F.data.startswith("import_mafile_for_"))
 async def callback_import_mafile_for(
     callback: CallbackQuery,
     state: FSMContext,
@@ -2307,7 +2308,7 @@ def _validated_account_mafile(payload: bytes) -> tuple[dict[str, str | None], di
     return values, session_values
 
 
-@dp.message(AccountMaFileImportFlow.waiting_document, NonCommandInputFilter())
+@router.message(AccountMaFileImportFlow.waiting_document, NonCommandInputFilter())
 async def receive_account_mafile(message: Message, state: FSMContext) -> None:
     """Import maFile secrets locally for the selected owned account."""
     if message.chat.type != ChatType.PRIVATE:
@@ -2412,7 +2413,7 @@ async def receive_account_mafile(message: Message, state: FSMContext) -> None:
         )
 
 
-@dp.callback_query(F.data.startswith("action_check_token_"))
+@router.callback_query(F.data.startswith("action_check_token_"))
 @validated_callback_data(r"action_check_token_(?P<db_id>[1-9][0-9]{0,9})")
 async def callback_action_check_token(callback: CallbackQuery):
     """Проверка токена по кнопке"""
@@ -2468,7 +2469,7 @@ async def callback_action_check_token(callback: CallbackQuery):
         finally:
             await client.close()
 
-@dp.callback_query(F.data.startswith("delete_account_"))
+@router.callback_query(F.data.startswith("delete_account_"))
 @validated_callback_data(r"delete_account_(?P<db_id>[1-9][0-9]{0,9})")
 async def callback_delete_account(callback: CallbackQuery):
     mafile_id = int(callback.data.split("_")[2])
@@ -2491,7 +2492,7 @@ async def callback_delete_account(callback: CallbackQuery):
     )
     await callback_feedback(callback)
 
-@dp.callback_query(F.data.startswith("confirm_delete_"))
+@router.callback_query(F.data.startswith("confirm_delete_"))
 @validated_callback_data(r"confirm_delete_(?P<db_id>[1-9][0-9]{0,9})")
 async def callback_confirm_delete(callback: CallbackQuery):
     await callback_feedback(callback)
@@ -2524,7 +2525,7 @@ async def _start_account_add(state: FSMContext, user_id: int) -> None:
     await state.set_state(AccountAddFlow.waiting_credentials)
 
 
-@dp.callback_query(F.data == "add_account")
+@router.callback_query(F.data == "add_account")
 async def callback_add_account(callback: CallbackQuery, state: FSMContext):
     if not callback.message or callback.message.chat.type != ChatType.PRIVATE:
         await callback_feedback(
@@ -2559,7 +2560,7 @@ async def callback_add_account(callback: CallbackQuery, state: FSMContext):
         await state.clear()
         raise
 
-@dp.callback_query(F.data == "cancel_state_to_accounts")
+@router.callback_query(F.data == "cancel_state_to_accounts")
 async def callback_cancel_state_to_accounts(
     callback: CallbackQuery,
     state: FSMContext,
@@ -2571,9 +2572,9 @@ async def callback_cancel_state_to_accounts(
     await callback_feedback(callback, "❌ Добавление отменено")
     await show_accounts_page(callback, page=0)
 
-@dp.message(Command("add_steam"))
-@dp.message(Command("add"))
-@dp.message(Command("new"))
+@router.message(Command("add_steam"))
+@router.message(Command("add"))
+@router.message(Command("new"))
 async def cmd_add_steam(
     message: Message,
     state: FSMContext,
@@ -2598,7 +2599,7 @@ async def cmd_add_steam(
         raise
 
 
-@dp.message(
+@router.message(
     AccountAddFlow.waiting_credentials,
     F.text,
     ~F.text.startswith("/"),
@@ -2705,9 +2706,9 @@ async def receive_account_credentials(
         reply_markup=keyboard,
     )
 
-@dp.message(Command("my_accounts"))
-@dp.message(Command("accounts"))
-@dp.message(Command("list"))
+@router.message(Command("my_accounts"))
+@router.message(Command("accounts"))
+@router.message(Command("list"))
 async def cmd_my_accounts(message: Message):
     """Показывает список аккаунтов с пагинацией (через сообщение)"""
     telegram_id = message.from_user.id
@@ -2749,11 +2750,11 @@ async def cmd_my_accounts(message: Message):
 
         await message.answer(accounts_text, parse_mode="HTML", reply_markup=keyboard)
 
-@dp.message(Command("get_code"))
-@dp.message(Command("getcode"))
-@dp.message(Command("guardcode"))
-@dp.message(Command("guard_code"))
-@dp.message(Command("gc"))
+@router.message(Command("get_code"))
+@router.message(Command("getcode"))
+@router.message(Command("guardcode"))
+@router.message(Command("guard_code"))
+@router.message(Command("gc"))
 async def cmd_get_code_aliases(message: Message, command: CommandObject):
     args = command.args.split() if command.args else []
     telegram_id = message.from_user.id
@@ -2909,7 +2910,7 @@ async def generate_and_send_code(message: Message, mafile: Mafile):
     finally:
         await client.close()
 
-@dp.callback_query(F.data.startswith("refresh_code_"))
+@router.callback_query(F.data.startswith("refresh_code_"))
 @validated_callback_data(r"refresh_code_(?P<db_id>[1-9][0-9]{0,9})")
 async def callback_refresh_code(callback: CallbackQuery):
     """Обновление кода (редактирует существующее сообщение)"""
@@ -3006,8 +3007,8 @@ async def callback_refresh_code(callback: CallbackQuery):
         finally:
             await client.close()
 
-@dp.message(Command("login"))
-@dp.message(Command("signin"))
+@router.message(Command("login"))
+@router.message(Command("signin"))
 @require_proxy
 async def cmd_login(
     message: Message,
@@ -3064,8 +3065,8 @@ async def cmd_login(
         )
 
 
-@dp.message(Command("check_tokens"))
-@dp.message(Command("tokens"))
+@router.message(Command("check_tokens"))
+@router.message(Command("tokens"))
 async def cmd_check_tokens(message: Message):
     telegram_id = message.from_user.id
 
@@ -3110,9 +3111,9 @@ async def cmd_check_tokens(message: Message):
 
         await message.answer(status_text, parse_mode="HTML")
 
-@dp.message(Command("delete_account"))
-@dp.message(Command("delete"))
-@dp.message(Command("remove"))
+@router.message(Command("delete_account"))
+@router.message(Command("delete"))
+@router.message(Command("remove"))
 async def cmd_delete_account(message: Message, command: CommandObject):
     args = command.args.split() if command.args else []
     telegram_id = message.from_user.id
@@ -3157,7 +3158,7 @@ async def cmd_delete_account(message: Message, command: CommandObject):
             parse_mode="HTML",
         )
 
-@dp.message(Command("cancel"))
+@router.message(Command("cancel"))
 async def cmd_cancel(message: Message, state: FSMContext):
     """Отмена текущего действия"""
     user_id = message.from_user.id

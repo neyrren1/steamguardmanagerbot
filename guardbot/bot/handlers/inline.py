@@ -1,7 +1,8 @@
 """Extracted from the legacy bot module without behavior changes."""
 
+from aiogram import Router
 from aiogram.types import InlineQuery, InlineQueryResultArticle, InputTextMessageContent
-from guardbot.bot.runtime import dp, get_inventory_context_id, process_inventory_items_universal
+from guardbot.bot.runtime import get_inventory_context_id, process_inventory_items_universal
 from guardbot.config import logger
 from guardbot.database import AccountGroup, AsyncSessionLocal, Mafile
 from guardbot.security import decrypt_value
@@ -15,10 +16,12 @@ import math
 import struct
 import time
 
+router = Router(name=__name__)
+
 # ==================== ИНЛАЙН РЕЖИМ ====================
 
 
-@dp.inline_query()
+@router.inline_query()
 async def inline_handler(inline_query: InlineQuery):
     """Обработчик инлайн-запросов"""
     user_id = inline_query.from_user.id

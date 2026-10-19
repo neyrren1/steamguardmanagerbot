@@ -585,7 +585,9 @@ def test_registered_manual_code_handler_rejects_commands_and_precedes_catch_all(
         from_user=User(id=510, is_bot=False, first_name="Test"),
         text="ABCDE",
     )
-    handlers = accounts.dp.message.handlers
+    from guardbot.bot import routing, runtime
+
+    handlers = routing.ordered_handlers(runtime.dp, "message")
     typed_handler = next(
         handler
         for handler in handlers

@@ -353,27 +353,33 @@ def test_rich_demo_callback_handler_rejects_unknown_action() -> None:
     assert callback.message.feedback == ["Неизвестное демонстрационное действие."]
 
 
-def test_entrypoint_imports_rich_demo_handler() -> None:
+def test_entrypoint_composes_rich_demo_router_before_catch_all() -> None:
+    from guardbot.bot import routing
+    from guardbot.bot.handlers import messages, rich_demo
+
     tree = ast.parse((ROOT / "guardbot/__main__.py").read_text(encoding="utf-8"))
-    imported_names = [
-        alias.name
+    setup_calls = [
+        node
         for node in ast.walk(tree)
-        if isinstance(node, ast.ImportFrom)
-        and node.module == "guardbot.bot.handlers"
-        for alias in node.names
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "setup_routers"
     ]
 
-    assert "rich_demo" in imported_names
-    assert imported_names.index("rich_demo") < imported_names.index("messages")
+    assert len(setup_calls) == 1
+    assert routing.ROUTERS.index(rich_demo.router) < routing.ROUTERS.index(
+        messages.router
+    )
 
 
 def test_documented_launcher_registers_rich_demo_before_catch_all() -> None:
     script = """
 import tgbot
+from guardbot.bot import routing
 from guardbot.bot.handlers.messages import handle_messages
 from guardbot.bot.handlers.rich_demo import cmd_rich_demo
-
-callbacks = [handler.callback for handler in tgbot.dp.message.handlers]
+routing.setup_routers(tgbot.dp)  # what the launcher's main() does
+callbacks = [handler.callback for handler in routing.ordered_handlers(tgbot.dp, "message")]
 assert callbacks.index(cmd_rich_demo) < callbacks.index(handle_messages)
 """
     result = subprocess.run(

@@ -303,10 +303,11 @@ def test_note_non_text_fallback_precedes_legacy_catch_all(monkeypatch) -> None:
 
     script = """
 import tgbot
+from guardbot.bot import routing
 from guardbot.bot.handlers.accounts import reject_note_non_text
 from guardbot.bot.handlers.messages import handle_messages
-
-callbacks = [handler.callback for handler in tgbot.dp.message.handlers]
+routing.setup_routers(tgbot.dp)  # what the launcher's main() does
+callbacks = [handler.callback for handler in routing.ordered_handlers(tgbot.dp, "message")]
 assert callbacks.index(reject_note_non_text) < callbacks.index(handle_messages)
 """
     result = subprocess.run(

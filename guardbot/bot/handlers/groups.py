@@ -8,21 +8,23 @@ import json
 import re
 import zipfile
 
-from aiogram import F
+from aiogram import F, Router
 from aiogram.enums import ChatType
 from aiogram.fsm.context import FSMContext
 from aiogram.types import BufferedInputFile, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from guardbot.bot.callback_validation import validated_callback_data
 from guardbot.bot.handlers.accounts import callback_account_settings, callback_settings, show_accounts_page, update_account_settings_message
 from guardbot.bot.handlers.commands import build_mafile_dict
-from guardbot.bot.runtime import callback_feedback, clear_user_workflows, dp
+from guardbot.bot.runtime import callback_feedback, clear_user_workflows
 from guardbot.bot.states import GroupFlow
 from guardbot.database import AccountGroup, AsyncSessionLocal, Mafile, User
 from guardbot.services.ownership import get_owned_group, get_owned_mafile
 from sqlalchemy import func, select
 
+router = Router(name=__name__)
+
 # ==================== ЗАКРЕПЛЕНИЕ АККАУНТА ====================
-@dp.callback_query(F.data.startswith("toggle_pin_"))
+@router.callback_query(F.data.startswith("toggle_pin_"))
 @validated_callback_data(r"toggle_pin_(?P<db_id>[1-9][0-9]{0,9})")
 async def callback_toggle_pin(callback: CallbackQuery):
     """Закрепление/открепление аккаунта в списке"""
@@ -62,7 +64,7 @@ async def _validated_group_name(message: Message) -> str | None:
     return group_name
 
 
-@dp.callback_query(F.data == "groups_menu")
+@router.callback_query(F.data == "groups_menu")
 async def callback_groups_menu(callback: CallbackQuery, state: FSMContext):
     """Меню групп"""
     telegram_id = callback.from_user.id
@@ -124,7 +126,7 @@ async def callback_groups_menu(callback: CallbackQuery, state: FSMContext):
     await callback_feedback(callback)
 
 
-@dp.callback_query(F.data == "create_group")
+@router.callback_query(F.data == "create_group")
 async def callback_create_group(callback: CallbackQuery, state: FSMContext):
     """Создание новой группы"""
     await clear_user_workflows(callback.from_user.id, state)
@@ -147,7 +149,7 @@ async def callback_create_group(callback: CallbackQuery, state: FSMContext):
     await callback_feedback(callback)
 
 
-@dp.message(GroupFlow.waiting_name, F.text, ~F.text.startswith("/"))
+@router.message(GroupFlow.waiting_name, F.text, ~F.text.startswith("/"))
 async def process_group_name(message: Message, state: FSMContext):
     """Create a group from a typed FSM prompt."""
     if message.chat.type != ChatType.PRIVATE:
@@ -187,7 +189,7 @@ async def process_group_name(message: Message, state: FSMContext):
 
 
 
-@dp.callback_query(F.data.startswith("view_group_"))
+@router.callback_query(F.data.startswith("view_group_"))
 async def callback_view_group(callback: CallbackQuery):
     """Просмотр группы с возможностью действий"""
     match = re.fullmatch(
@@ -246,7 +248,7 @@ async def callback_view_group(callback: CallbackQuery):
     )
     await callback_feedback(callback)
 
-@dp.callback_query(F.data.startswith("export_group_"))
+@router.callback_query(F.data.startswith("export_group_"))
 @validated_callback_data(r"export_group_(?P<db_id>[1-9][0-9]{0,9})")
 async def callback_export_group(callback: CallbackQuery):
     """Экспорт группы через кнопку"""
@@ -355,7 +357,7 @@ async def callback_export_group(callback: CallbackQuery):
             )
 
 # Сначала более специфичный
-@dp.callback_query(F.data.startswith("list_group_id_"))
+@router.callback_query(F.data.startswith("list_group_id_"))
 @validated_callback_data(
     r"list_group_id_(?P<db_id>[1-9][0-9]{0,9})_"
     r"(?P<int32_page>[0-9]{1,10})"
@@ -369,7 +371,7 @@ async def callback_list_group_id(callback: CallbackQuery):
     await show_accounts_page(callback, page, group_id)
 
 # Потом общий list_group_
-@dp.callback_query(F.data.startswith("list_group_"))
+@router.callback_query(F.data.startswith("list_group_"))
 @validated_callback_data(r"list_group_(?:all|none)_0")
 async def callback_list_group_filter(callback: CallbackQuery):
     """Фильтр аккаунтов по группе"""
@@ -382,7 +384,7 @@ async def callback_list_group_filter(callback: CallbackQuery):
         await show_accounts_page(callback, 0, 0)
     await callback_feedback(callback)
 
-@dp.callback_query(F.data.startswith("rename_group_"))
+@router.callback_query(F.data.startswith("rename_group_"))
 @validated_callback_data(r"rename_group_(?P<db_id>[1-9][0-9]{0,9})")
 async def callback_rename_group(callback: CallbackQuery, state: FSMContext):
     """Переименование группы"""
@@ -407,7 +409,7 @@ async def callback_rename_group(callback: CallbackQuery, state: FSMContext):
     await callback_feedback(callback)
 
 
-@dp.message(GroupFlow.waiting_rename, F.text, ~F.text.startswith("/"))
+@router.message(GroupFlow.waiting_rename, F.text, ~F.text.startswith("/"))
 async def process_group_rename(message: Message, state: FSMContext):
     """Rename an owned group from a typed FSM prompt."""
     if message.chat.type != ChatType.PRIVATE:
@@ -448,7 +450,7 @@ async def process_group_rename(message: Message, state: FSMContext):
     )
 
 
-@dp.callback_query(F.data.startswith("delete_group_"))
+@router.callback_query(F.data.startswith("delete_group_"))
 @validated_callback_data(r"delete_group_(?P<db_id>[1-9][0-9]{0,9})")
 async def callback_delete_group(callback: CallbackQuery):
     """Удаление группы"""
@@ -478,7 +480,7 @@ async def callback_delete_group(callback: CallbackQuery):
     await callback_feedback(callback)
 
 
-@dp.callback_query(F.data.startswith("confirm_delete_group_"))
+@router.callback_query(F.data.startswith("confirm_delete_group_"))
 @validated_callback_data(r"confirm_delete_group_(?P<db_id>[1-9][0-9]{0,9})")
 async def callback_confirm_delete_group(callback: CallbackQuery, state: FSMContext):
     """Подтверждение удаления группы"""
@@ -500,7 +502,7 @@ async def callback_confirm_delete_group(callback: CallbackQuery, state: FSMConte
 
 # ==================== СМЕНА ГРУППЫ АККАУНТА ====================
 
-@dp.callback_query(F.data.startswith("change_group_"))
+@router.callback_query(F.data.startswith("change_group_"))
 @validated_callback_data(r"change_group_(?P<db_id>[1-9][0-9]{0,9})")
 async def callback_change_group(callback: CallbackQuery):
     """Смена группы аккаунта"""
@@ -559,7 +561,7 @@ async def callback_change_group(callback: CallbackQuery):
     )
     await callback_feedback(callback)
 
-@dp.callback_query(F.data.startswith("set_group_"))
+@router.callback_query(F.data.startswith("set_group_"))
 @validated_callback_data(
     r"set_group_(?P<db_id>[1-9][0-9]{0,9})_"
     r"(?P<int32_group>[0-9]{1,10})"
@@ -591,7 +593,7 @@ async def callback_set_group(callback: CallbackQuery):
     callback.data = f"account_settings_{mafile_id}"
     await callback_account_settings(callback)
 
-@dp.callback_query(F.data.startswith("set_timeout_"))
+@router.callback_query(F.data.startswith("set_timeout_"))
 @validated_callback_data(r"set_timeout_(?P<int32_timeout>[0-9]{1,10})")
 async def callback_set_timeout_value(callback: CallbackQuery):
     """Установка значения таймаута"""

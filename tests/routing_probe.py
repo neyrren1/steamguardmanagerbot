@@ -138,8 +138,10 @@ def load_launcher(name: str):
         importlib.import_module("tgbot")
     else:
         raise SystemExit(f"unknown launcher {name!r}")
-    from guardbot.bot import runtime
+    from guardbot.bot import routing, runtime
 
+    # What guardbot.__main__.main() does before polling.
+    routing.setup_routers(runtime.dp)
     return runtime.dp
 
 

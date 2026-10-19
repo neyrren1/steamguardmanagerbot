@@ -7,7 +7,8 @@ from guardbot.database import *
 from guardbot.services.session_manager import *
 from guardbot.bot.runtime import *
 
-# Handler imports register routes; the unfiltered messages module must stay last.
+# Historical names only: dispatch order is defined by guardbot.bot.routing,
+# not by the order of these imports.
 # isort: off
 from guardbot.bot.handlers.common import *
 from guardbot.bot.handlers.imports import *

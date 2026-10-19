@@ -5,7 +5,7 @@ from html import escape
 
 from aiogram.enums import ChatType
 from aiogram.exceptions import TelegramAPIError
-from aiogram import F
+from aiogram import F, Router
 from aiogram.filters import Command, CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
@@ -15,7 +15,6 @@ from guardbot.bot.runtime import (
     bot,
     clear_user_workflows,
     delete_secret_message_or_abort,
-    dp,
 )
 from guardbot.bot.states import NewMaFileImportFlow
 from guardbot.config import logger
@@ -26,6 +25,8 @@ from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 import io
 import json
+
+router = Router(name=__name__)
 
 _MAX_NEW_MAFILE_BYTES = 1_048_576
 _MAX_MAFILE_VALUE_LENGTH = 65_536
@@ -59,7 +60,7 @@ async def _prepare_secret_command(message: Message) -> bool:
     )
     return False
 
-@dp.message(Command("import_mafile"))
+@router.message(Command("import_mafile"))
 async def cmd_import_mafile(message: Message, state: FSMContext):
     """
     Импорт существующего .mafile файла
@@ -191,7 +192,7 @@ def _validated_new_mafile(payload: bytes) -> tuple[dict[str, str | None], dict]:
     return values, session_values
 
 
-@dp.message(
+@router.message(
     NewMaFileImportFlow.waiting_document,
     F.document,
     NonCommandInputFilter(),
@@ -315,7 +316,7 @@ async def receive_new_mafile(message: Message, state: FSMContext) -> None:
     )
 
 
-@dp.message(NewMaFileImportFlow.waiting_document, NonCommandInputFilter())
+@router.message(NewMaFileImportFlow.waiting_document, NonCommandInputFilter())
 async def reject_new_mafile_non_document(
     message: Message,
     state: FSMContext,
@@ -328,7 +329,7 @@ async def reject_new_mafile_non_document(
 # ==================== НОВЫЕ КОМАНДЫ ДЛЯ УПРАВЛЕНИЯ ПРОКСИ ====================
 # ВСТАВИТЬ: Эти команды добавить перед функцией main()
 
-@dp.message(Command("set_proxy"))
+@router.message(Command("set_proxy"))
 async def cmd_set_proxy(message: Message, command: CommandObject):
     """
     Установка общего прокси для всех аккаунтов пользователя
@@ -407,7 +408,7 @@ async def cmd_set_proxy(message: Message, command: CommandObject):
         logger.error("Error setting proxy: %s", type(e).__name__)
         await message.answer("❌ Не удалось сохранить прокси. Проверьте формат адреса.")
 
-@dp.message(Command("set_account_proxy"))
+@router.message(Command("set_account_proxy"))
 async def cmd_set_account_proxy(message: Message, command: CommandObject):
     """
     Установка уникального прокси для конкретного аккаунта
@@ -477,7 +478,7 @@ async def cmd_set_account_proxy(message: Message, command: CommandObject):
             parse_mode="HTML"
         )
 
-@dp.message(Command("remove_account_proxy"))
+@router.message(Command("remove_account_proxy"))
 async def cmd_remove_account_proxy(message: Message, command: CommandObject):
     """
     Удаление уникального прокси с аккаунта
@@ -532,7 +533,7 @@ async def cmd_remove_account_proxy(message: Message, command: CommandObject):
             parse_mode="HTML"
         )
 
-@dp.message(Command("my_proxy"))
+@router.message(Command("my_proxy"))
 async def cmd_my_proxy(message: Message):
     """
     Просмотр текущих настроек прокси

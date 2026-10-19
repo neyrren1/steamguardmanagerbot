@@ -6,7 +6,7 @@ from pathlib import Path
 
 from guardbot import database, security
 from guardbot import __main__ as entrypoint
-from guardbot.bot import runtime
+from guardbot.bot import routing, runtime
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -19,6 +19,11 @@ def test_main_preserves_initialization_order(monkeypatch) -> None:
     monkeypatch.setattr(security, "init_fernet", lambda: calls.append("security"))
     monkeypatch.setattr(database, "init_engine", lambda: calls.append("engine"))
     monkeypatch.setattr(runtime, "init_bot", lambda: calls.append("bot"))
+    monkeypatch.setattr(
+        routing,
+        "setup_routers",
+        lambda dispatcher: calls.append(("routers", dispatcher)),
+    )
     monkeypatch.setattr(runtime.bot, "get", lambda: fake_bot)
 
     async def init_db() -> None:
@@ -40,6 +45,7 @@ def test_main_preserves_initialization_order(monkeypatch) -> None:
         "security",
         "engine",
         "bot",
+        ("routers", runtime.dp),
         "database",
         "trade_tasks",
         ("polling", fake_bot),

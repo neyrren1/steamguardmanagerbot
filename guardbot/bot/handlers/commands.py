@@ -3,7 +3,7 @@
 from contextlib import suppress
 from html import escape
 
-from aiogram import F
+from aiogram import F, Router
 from aiogram.enums import ChatType
 from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import Command, CommandObject
@@ -18,7 +18,6 @@ from guardbot.bot.runtime import (
     check_proxy_available,
     clear_user_workflows,
     delete_secret_message_or_abort,
-    dp,
     start_trade_check_task,
     stop_trade_check_task,
 )
@@ -44,14 +43,16 @@ import json
 import time
 import zipfile
 
+router = Router(name=__name__)
+
 def _features():
     from guardbot.bot.handlers import features
     return features
 
 
 # ==================== КОМАНДА: ИНВЕНТАРЬ ====================
-@dp.message(Command("inventory"))
-@dp.message(Command("inv"))
+@router.message(Command("inventory"))
+@router.message(Command("inv"))
 async def cmd_inventory(
     message: Message,
     command: CommandObject,
@@ -133,8 +134,8 @@ async def cmd_inventory(
 
         await _features().callback_inventory_menu(fake_callback, state)
 # ==================== КОМАНДА: ПОДТВЕРЖДЕНИЯ ====================
-@dp.message(Command("confirmations"))
-@dp.message(Command("conf"))
+@router.message(Command("confirmations"))
+@router.message(Command("conf"))
 async def cmd_confirmations(message: Message, command: CommandObject):
     """Открыть меню подтверждений аккаунта"""
     args = command.args.split() if command.args else []
@@ -217,8 +218,8 @@ async def cmd_confirmations(message: Message, command: CommandObject):
         await _features().callback_confirmations_menu(fake_callback)
 
 # ==================== КОМАНДА: ПОДТВЕРДИТЬ ВСЁ ====================
-@dp.message(Command("confirmall"))
-@dp.message(Command("conf_all"))
+@router.message(Command("confirmall"))
+@router.message(Command("conf_all"))
 async def cmd_confirmall(message: Message, command: CommandObject):
     """Подтвердить все ожидающие действия для аккаунта"""
     args = command.args.split() if command.args else []
@@ -298,8 +299,8 @@ async def cmd_confirmall(message: Message, command: CommandObject):
         await _features().callback_confirm_all(fake_callback)
 
 # ==================== КОМАНДА: ТРЕЙДЫ ====================
-@dp.message(Command("trades"))
-@dp.message(Command("trade"))
+@router.message(Command("trades"))
+@router.message(Command("trade"))
 async def cmd_trades(message: Message, command: CommandObject):
     """Открыть меню трейдов аккаунта"""
     args = command.args.split() if command.args else []
@@ -385,8 +386,8 @@ async def cmd_trades(message: Message, command: CommandObject):
         await _features().callback_trades_menu(fake_callback)
 
 # ==================== КОМАНДА: НАСТРОЙКИ АККАУНТА ====================
-@dp.message(Command("settings"))
-@dp.message(Command("acc_settings"))
+@router.message(Command("settings"))
+@router.message(Command("acc_settings"))
 async def cmd_account_settings_cmd(message: Message, command: CommandObject):
     """Открыть настройки конкретного аккаунта"""
     args = command.args.split() if command.args else []
@@ -454,8 +455,8 @@ async def cmd_account_settings_cmd(message: Message, command: CommandObject):
         await callback_account_settings(fake_callback)
 
 # ==================== КОМАНДА: ДЕТАЛИ АККАУНТА ====================
-@dp.message(Command("acc"))
-@dp.message(Command("account"))
+@router.message(Command("acc"))
+@router.message(Command("account"))
 async def cmd_account_detail(message: Message, command: CommandObject):
     """Открыть детали аккаунта"""
     args = command.args.split() if command.args else []
@@ -523,7 +524,7 @@ async def cmd_account_detail(message: Message, command: CommandObject):
         await callback_account_detail(fake_callback)
 
 # ==================== КОМАНДА: ЗАМЕТКА ====================
-@dp.message(Command("note"))
+@router.message(Command("note"))
 async def cmd_note(message: Message, command: CommandObject):
     """Добавить/посмотреть/удалить заметку к аккаунту"""
     if not await delete_secret_message_or_abort(message):
@@ -612,7 +613,7 @@ async def cmd_note(message: Message, command: CommandObject):
 
 
 # ==================== КОМАНДА: ПРОКСИ АККАУНТА ====================
-@dp.message(Command("proxy"))
+@router.message(Command("proxy"))
 async def cmd_proxy_info(message: Message, command: CommandObject):
     """Показать какой прокси используется для аккаунта"""
     args = command.args.split() if command.args else []
@@ -681,7 +682,7 @@ async def cmd_proxy_info(message: Message, command: CommandObject):
 
 
 # ==================== КОМАНДА: STEAMID ====================
-@dp.message(Command("steamid"))
+@router.message(Command("steamid"))
 async def cmd_steamid(message: Message, command: CommandObject):
     """Показать SteamID аккаунта"""
     args = command.args.split() if command.args else []
@@ -754,8 +755,8 @@ async def cmd_steamid(message: Message, command: CommandObject):
 
 
 # ==================== КОМАНДА: ТРЕЙД-ССЫЛКА ====================
-@dp.message(Command("tradelink"))
-@dp.message(Command("tl"))
+@router.message(Command("tradelink"))
+@router.message(Command("tl"))
 async def cmd_tradelink(message: Message, command: CommandObject):
     """Получить трейд-ссылку аккаунта"""
     args = command.args.split() if command.args else []
@@ -836,7 +837,7 @@ async def cmd_tradelink(message: Message, command: CommandObject):
 
 
 # ==================== КОМАНДА: МАССОВЫЙ ВХОД ====================
-@dp.message(Command("login_all"))
+@router.message(Command("login_all"))
 async def cmd_login_all(message: Message):
     """Войти во все аккаунты (сначала через refresh token, потом полный вход)"""
     telegram_id = message.from_user.id
@@ -971,7 +972,7 @@ async def cmd_login_all(message: Message):
 
 
 # ==================== КОМАНДА: ВКЛЮЧИТЬ УВЕДОМЛЕНИЯ ====================
-@dp.message(Command("notify_on"))
+@router.message(Command("notify_on"))
 async def cmd_notify_on(
     message: Message,
     command: CommandObject,
@@ -1060,7 +1061,7 @@ async def cmd_notify_on(
 
 
 # ==================== КОМАНДА: ВЫКЛЮЧИТЬ УВЕДОМЛЕНИЯ ====================
-@dp.message(Command("notify_off"))
+@router.message(Command("notify_off"))
 async def cmd_notify_off(message: Message, command: CommandObject):
     """Выключить уведомления о трейдах"""
     args = command.args.split() if command.args else []
@@ -1111,7 +1112,7 @@ async def cmd_notify_off(message: Message, command: CommandObject):
         )
 
 # ==================== КОМАНДА: ЭКСПОРТ MAFILE ====================
-@dp.message(Command("export"))
+@router.message(Command("export"))
 async def cmd_export_mafile(message: Message, command: CommandObject):
     """Экспорт mafile для одного аккаунта"""
     if message.chat.type != ChatType.PRIVATE:
@@ -1170,7 +1171,7 @@ async def cmd_export_mafile(message: Message, command: CommandObject):
 
 
 # ==================== КОМАНДА: ЭКСПОРТ ВСЕХ MAFILE ====================
-@dp.message(Command("export_all"))
+@router.message(Command("export_all"))
 async def cmd_export_all(message: Message):
     """Экспорт всех аккаунтов в ZIP архив"""
     if message.chat.type != ChatType.PRIVATE:
@@ -1239,7 +1240,7 @@ async def cmd_export_all(message: Message):
 
 
 # ==================== CALLBACK: ЭКСПОРТ MAFILE ====================
-@dp.callback_query(F.data.startswith("export_mafile_"))
+@router.callback_query(F.data.startswith("export_mafile_"))
 @validated_callback_data(r"export_mafile_(?P<db_id>[1-9][0-9]{0,9})")
 async def callback_export_mafile(callback: CallbackQuery):
     """Экспорт mafile через кнопку"""
@@ -1390,7 +1391,7 @@ async def _reject_password_outside_private_chat(message: Message) -> bool:
     return True
 
 
-@dp.message(Command("set_password"))
+@router.message(Command("set_password"))
 async def cmd_set_password(
     message: Message,
     command: CommandObject,
@@ -1511,7 +1512,7 @@ async def _process_bot_password(
     )
 
 
-@dp.message(
+@router.message(
     BotPasswordFlow.waiting_password,
     F.text,
     ~F.text.startswith("/"),
@@ -1546,7 +1547,7 @@ async def receive_bot_password(message: Message, state: FSMContext):
 
 
 # ==================== КОМАНДА: ЗАБЛОКИРОВАТЬ БОТА ====================
-@dp.message(Command("lock"))
+@router.message(Command("lock"))
 async def cmd_lock(message: Message, state: FSMContext):
     """Заблокировать бота"""
     telegram_id = message.from_user.id
@@ -1583,7 +1584,7 @@ async def cmd_lock(message: Message, state: FSMContext):
 
 
 # ==================== КОМАНДА: РАЗБЛОКИРОВАТЬ БОТА ====================
-@dp.message(Command("unlock"))
+@router.message(Command("unlock"))
 async def cmd_unlock(
     message: Message,
     command: CommandObject,
@@ -1671,7 +1672,7 @@ async def cmd_unlock(
     await cmd_start_help(message)
 
 
-@dp.callback_query(F.data == "cancel_unlock")
+@router.callback_query(F.data == "cancel_unlock")
 async def callback_cancel_unlock(
     callback: CallbackQuery,
     state: FSMContext,
@@ -1692,7 +1693,7 @@ async def callback_cancel_unlock(
     )
 
 
-@dp.message(
+@router.message(
     UnlockFlow.waiting_password,
     F.text,
     ~F.text.startswith("/"),
@@ -1753,7 +1754,7 @@ async def receive_unlock_password(
 
 
 # ==================== КОМАНДА: НАСТРОЙКА АВТОБЛОКИРОВКИ ====================
-@dp.message(Command("set_lock_timeout"))
+@router.message(Command("set_lock_timeout"))
 async def cmd_set_lock_timeout(message: Message, command: CommandObject):
     """Настроить таймаут автоблокировки"""
     args = command.args.split() if command.args else []

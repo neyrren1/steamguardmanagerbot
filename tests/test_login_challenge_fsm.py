@@ -530,7 +530,9 @@ def test_challenge_document_handler_is_registered_before_catch_all() -> None:
         ),
     )
     code = make(2, text="ABCDE")
-    handlers = accounts.dp.message.handlers
+    from guardbot.bot import routing, runtime
+
+    handlers = routing.ordered_handlers(runtime.dp, "message")
 
     def index_of(callback) -> int:
         return next(
@@ -603,7 +605,7 @@ def test_login_command_handler_receives_fsm_context_through_aiogram(monkeypatch)
     )
     handler = next(
         handler
-        for handler in accounts.dp.message.handlers
+        for handler in accounts.router.message.handlers
         if getattr(handler.callback, "__name__", "") == "wrapper"
         and handler.callback.__code__.co_freevars
         and any(

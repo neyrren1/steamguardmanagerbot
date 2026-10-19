@@ -1,6 +1,6 @@
 """Extracted from the legacy bot module without behavior changes."""
 
-from aiogram import F
+from aiogram import F, Router
 from aiogram.enums import ChatType
 from aiogram.filters import Command, CommandObject
 from aiogram.fsm.context import FSMContext
@@ -14,7 +14,6 @@ from guardbot.bot.runtime import (
     bot,
     clear_user_workflows,
     delete_secret_message_or_abort,
-    dp,
 )
 from guardbot.bot.states import BulkImportFlow
 from guardbot.config import MAX_FILE_SIZE, MAX_ZIP_UNCOMPRESSED, logger
@@ -27,6 +26,8 @@ import json
 import re
 import time
 import zipfile
+
+router = Router(name=__name__)
 
 # ==================== ФУНКЦИЯ: ОБРАБОТКА ТХТ ЛОГ:ПАСС ====================
 async def process_txt_accounts(message: Message, user_id: int):
@@ -618,7 +619,7 @@ async def process_zip_archive(message: Message, user_id: int):
 
 # ==================== КОМАНДЫ УПРАВЛЕНИЯ ГРУППАМИ ====================
 
-@dp.message(Command("creategroup"))
+@router.message(Command("creategroup"))
 async def cmd_create_group(message: Message, command: CommandObject):
     """Создать новую группу: /creategroup [название]"""
     args = command.args.split() if command.args else []
@@ -674,9 +675,9 @@ async def cmd_create_group(message: Message, command: CommandObject):
     )
 
 
-@dp.message(Command("delgroup"))
-@dp.message(Command("deletegroup"))
-@dp.message(Command("removegroup"))
+@router.message(Command("delgroup"))
+@router.message(Command("deletegroup"))
+@router.message(Command("removegroup"))
 async def cmd_delete_group(message: Message, command: CommandObject):
     """Удалить группу: /delgroup [название]"""
     args = command.args.split() if command.args else []
@@ -720,7 +721,7 @@ async def cmd_delete_group(message: Message, command: CommandObject):
     )
 
 
-@dp.message(Command("add_to_group"))
+@router.message(Command("add_to_group"))
 async def cmd_add_to_group(message: Message, command: CommandObject):
     """Добавить аккаунт в группу: /add_to_group [аккаунт] [группа]"""
     args = command.args.split() if command.args else []
@@ -787,8 +788,8 @@ async def cmd_add_to_group(message: Message, command: CommandObject):
     )
 
 
-@dp.message(Command("remove_from_group"))
-@dp.message(Command("ungroup"))
+@router.message(Command("remove_from_group"))
+@router.message(Command("ungroup"))
 async def cmd_remove_from_group(message: Message, command: CommandObject):
     """Убрать аккаунт из группы: /remove_from_group [аккаунт]"""
     args = command.args.split() if command.args else []
@@ -843,8 +844,8 @@ async def cmd_remove_from_group(message: Message, command: CommandObject):
     )
 
 
-@dp.message(Command("showgroup"))
-@dp.message(Command("group"))
+@router.message(Command("showgroup"))
+@router.message(Command("group"))
 async def cmd_show_group(message: Message, command: CommandObject, state: FSMContext):
     """Показать аккаунты в группе: /showgroup [название]"""
     args = command.args.split() if command.args else []
@@ -919,7 +920,7 @@ async def cmd_show_group(message: Message, command: CommandObject, state: FSMCon
 
         await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
 
-@dp.message(Command("groups"))
+@router.message(Command("groups"))
 async def cmd_groups(message: Message, state: FSMContext):
     """Просмотр групп"""
     telegram_id = message.from_user.id
@@ -985,8 +986,8 @@ async def cmd_groups(message: Message, state: FSMContext):
         reply_markup=keyboard
     )
 
-@dp.message(Command("exportgroup"))
-@dp.message(Command("export_group"))
+@router.message(Command("exportgroup"))
+@router.message(Command("export_group"))
 async def cmd_export_group(message: Message, command: CommandObject):
     """Экспорт всех аккаунтов из группы в ZIP: /exportgroup [название]"""
     if message.chat.type != ChatType.PRIVATE:
@@ -1096,7 +1097,7 @@ async def cmd_export_group(message: Message, command: CommandObject):
             )
 
 
-@dp.message(
+@router.message(
     BulkImportFlow.waiting_credentials,
     F.text,
     ~F.text.startswith("/"),
@@ -1272,7 +1273,7 @@ async def process_bulk_import(message: Message, state: FSMContext):
     await status_msg.edit_text(result_text, parse_mode="HTML", reply_markup=keyboard)
 
 
-@dp.message(BulkImportFlow.waiting_credentials, NonCommandInputFilter())
+@router.message(BulkImportFlow.waiting_credentials, NonCommandInputFilter())
 async def reject_bulk_import_non_text(message: Message, state: FSMContext) -> None:
     """Keep unrelated media out of the legacy catch-all during bulk import."""
     if not await delete_secret_message_or_abort(message):

@@ -6,12 +6,14 @@ short command hint for ordinary text.
 """
 
 from aiogram.enums import ChatType
+from aiogram import Router
 from aiogram.types import Message
 from guardbot.bot.handlers.bulk_import import (
     process_txt_accounts,
     process_zip_archive,
 )
-from guardbot.bot.runtime import dp
+
+router = Router(name=__name__)
 
 
 UNKNOWN_COMMAND_IN_FLOW_HINT = (
@@ -20,7 +22,7 @@ UNKNOWN_COMMAND_IN_FLOW_HINT = (
 )
 
 
-@dp.message()
+@router.message()
 async def handle_messages(message: Message, raw_state: str | None = None):
     """Handle messages that no workflow-specific handler consumed."""
     user_id = message.from_user.id
