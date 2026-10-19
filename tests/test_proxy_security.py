@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from guardbot.steam import client as steam_client
+from tests.handler_source import handler_paths
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -282,11 +283,9 @@ def test_proxy_probe_uses_only_the_pinned_proxy_url(monkeypatch) -> None:
 
 
 def test_proxy_test_handlers_do_not_construct_network_sessions() -> None:
-    handler_paths = [
-        ROOT / "guardbot/bot/handlers/common.py",
-        ROOT / "guardbot/bot/handlers/accounts.py",
-    ]
-    for path in handler_paths:
+    paths = handler_paths()
+    assert ROOT / "guardbot/bot/handlers/common.py" in paths
+    for path in paths:
         source = path.read_text(encoding="utf-8")
         assert "ClientSession(" not in source
         assert "ProxyConnector.from_url(" not in source

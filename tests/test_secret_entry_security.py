@@ -5,6 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.handler_source import handler_function
+
 
 def test_all_mafile_constructor_passwords_are_encrypted() -> None:
     handlers = Path("guardbot/bot/handlers")
@@ -52,79 +54,60 @@ def test_device_id_is_not_echoed_back_into_telegram_history() -> None:
 
 
 def test_secret_callbacks_use_central_feedback_instead_of_direct_ack() -> None:
-    targets = {
-        Path("guardbot/bot/handlers/security_controls.py"): {
-            "callback_lock_bot",
-            "callback_cancel_password_to_settings",
-        },
-        Path("guardbot/bot/handlers/commands.py"): {"callback_cancel_unlock"},
-        Path("guardbot/bot/handlers/accounts.py"): {
-            "callback_cancel_state_to_settings",
-            "callback_remove_account_proxy",
-        },
-        Path("guardbot/bot/handlers/common.py"): {"callback_cancel_state_to_start"},
+    function_names = {
+        "callback_lock_bot",
+        "callback_cancel_password_to_settings",
+        "callback_cancel_unlock",
+        "callback_cancel_state_to_settings",
+        "callback_remove_account_proxy",
+        "callback_cancel_state_to_start",
     }
 
-    for path, function_names in targets.items():
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        functions = {
-            node.name: node
-            for node in tree.body
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        }
-        for function_name in function_names:
-            function = functions[function_name]
-            answer_lines: list[int] = []
-            feedback_lines: list[int] = []
-            for node in ast.walk(function):
-                if not isinstance(node, ast.Call):
-                    continue
-                if (
-                    isinstance(node.func, ast.Attribute)
-                    and node.func.attr == "answer"
-                    and isinstance(node.func.value, ast.Name)
-                    and node.func.value.id == "callback"
-                ):
-                    answer_lines.append(node.lineno)
-                if isinstance(node.func, ast.Name) and node.func.id == "callback_feedback":
-                    feedback_lines.append(node.lineno)
+    for function_name in sorted(function_names):
+        function = handler_function(function_name)
+        answer_lines: list[int] = []
+        feedback_lines: list[int] = []
+        for node in ast.walk(function):
+            if not isinstance(node, ast.Call):
+                continue
+            if (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr == "answer"
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "callback"
+            ):
+                answer_lines.append(node.lineno)
+            if isinstance(node.func, ast.Name) and node.func.id == "callback_feedback":
+                feedback_lines.append(node.lineno)
 
-            assert answer_lines == [], function_name
-            assert feedback_lines, function_name
-            if function_name == "callback_remove_account_proxy":
-                nested_callback_calls = [
-                    node
-                    for node in ast.walk(function)
-                    if isinstance(node, ast.Call)
-                    and isinstance(node.func, ast.Name)
-                    and node.func.id == "callback_account_settings"
-                ]
-                assert nested_callback_calls == []
-            if function_name == "callback_cancel_password_to_settings":
-                nested_callback_calls = [
-                    node
-                    for node in ast.walk(function)
-                    if isinstance(node, ast.Call)
-                    and isinstance(node.func, ast.Name)
-                    and node.func.id == "callback_settings"
-                ]
-                assert nested_callback_calls == []
+        assert answer_lines == [], function_name
+        assert feedback_lines, function_name
+        if function_name == "callback_remove_account_proxy":
+            nested_callback_calls = [
+                node
+                for node in ast.walk(function)
+                if isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "callback_account_settings"
+            ]
+            assert nested_callback_calls == []
+        if function_name == "callback_cancel_password_to_settings":
+            nested_callback_calls = [
+                node
+                for node in ast.walk(function)
+                if isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "callback_settings"
+            ]
+            assert nested_callback_calls == []
 
 
 def test_account_callbacks_do_not_acknowledge_directly() -> None:
-    tree = ast.parse(
-        Path("guardbot/bot/handlers/accounts.py").read_text(encoding="utf-8")
-    )
-    functions = {
-        node.name: node
-        for node in tree.body
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-    }
     function_names = {"callback_test_account_proxy", "callback_confirm_delete"}
-    for function_name in function_names:
+    for function_name in sorted(function_names):
         answer_calls = [
             node
-            for node in ast.walk(functions[function_name])
+            for node in ast.walk(handler_function(function_name))
             if isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
             and node.func.attr == "answer"

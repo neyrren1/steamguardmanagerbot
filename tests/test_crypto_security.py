@@ -8,6 +8,7 @@ from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 
 from guardbot import security
+from tests.handler_source import handler_function
 from guardbot.passwords import (
     PasswordAttemptLimiter,
     PasswordRateLimitError,
@@ -186,16 +187,7 @@ def test_steam_client_does_not_log_cookies_or_session_ids() -> None:
 
 
 def test_steam_login_code_is_not_repeated_in_chat() -> None:
-    source_path = (
-        Path(__file__).parents[1] / "guardbot" / "bot" / "handlers" / "accounts.py"
-    )
-    tree = ast.parse(source_path.read_text(encoding="utf-8"))
-    handler = next(
-        node
-        for node in tree.body
-        if isinstance(node, ast.AsyncFunctionDef) and node.name == "receive_manual_steam_code"
-    )
-    rendered = ast.unparse(handler)
+    rendered = ast.unparse(handler_function("receive_manual_steam_code"))
 
     assert "Подтверждаю вход с кодом" not in rendered
     assert "delete_secret_message_or_abort(message)" in rendered

@@ -1,5 +1,4 @@
 import asyncio
-import inspect
 import subprocess
 import sys
 from pathlib import Path
@@ -94,10 +93,13 @@ class _InputMessage:
 
 
 def test_note_dialog_no_longer_uses_legacy_dispatch() -> None:
-    from guardbot.bot.handlers import accounts, messages
+    from tests.handler_source import PACKAGE, package_paths
 
-    sources = inspect.getsource(accounts) + inspect.getsource(messages)
-    assert '"waiting_note"' not in sources
+    assert [
+        str(path.relative_to(PACKAGE))
+        for path in package_paths()
+        if '"waiting_note"' in path.read_text(encoding="utf-8")
+    ] == []
 
 
 def test_note_prompt_replaces_competing_workflows_and_sets_state_before_delivery(
