@@ -223,7 +223,7 @@ def test_manual_code_login_double_failure_still_closes_client(monkeypatch) -> No
     from aiogram.methods import EditMessageText
 
     from guardbot.bot import pending_challenges
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import steam_challenge
 
     class SessionContext:
         async def __aenter__(self):
@@ -269,14 +269,14 @@ def test_manual_code_login_double_failure_still_closes_client(monkeypatch) -> No
         async def clear(self) -> None:
             return None
 
-    monkeypatch.setattr(accounts, "AsyncSessionLocal", SessionContext)
+    monkeypatch.setattr(steam_challenge, "AsyncSessionLocal", SessionContext)
     monkeypatch.setattr(
-        accounts,
+        steam_challenge,
         "get_owned_mafile",
         lambda *args, **kwargs: _async_result(mafile),
     )
     monkeypatch.setattr(
-        accounts.SteamSessionManager,
+        steam_challenge.SteamSessionManager,
         "create_steam_client_from_db",
         lambda *args, **kwargs: _async_result(client),
     )
@@ -284,7 +284,7 @@ def test_manual_code_login_double_failure_still_closes_client(monkeypatch) -> No
     async def scenario() -> None:
         callback = Callback()
         try:
-            await accounts.callback_manual_code(callback, State())
+            await steam_challenge.callback_manual_code(callback, State())
         except TelegramBadRequest:
             pass
         assert callback.answer_calls == 1
@@ -622,7 +622,7 @@ def test_non_telegram_challenge_prompt_failure_rolls_back_client_state(monkeypat
 
 
 def test_manual_code_cancellation_closes_untransferred_client(monkeypatch) -> None:
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import steam_challenge
 
     class Session:
         async def __aenter__(self):
@@ -660,20 +660,20 @@ def test_manual_code_cancellation_closes_untransferred_client(monkeypatch) -> No
 
     client = Client()
     mafile = SimpleNamespace(id=1, account_name="account")
-    monkeypatch.setattr(accounts, "AsyncSessionLocal", Session)
+    monkeypatch.setattr(steam_challenge, "AsyncSessionLocal", Session)
     monkeypatch.setattr(
-        accounts,
+        steam_challenge,
         "get_owned_mafile",
         lambda *args, **kwargs: _async_result(mafile),
     )
     monkeypatch.setattr(
-        accounts.SteamSessionManager,
+        steam_challenge.SteamSessionManager,
         "create_steam_client_from_db",
         lambda *args, **kwargs: _async_result(client),
     )
 
     async def scenario() -> None:
-        task = asyncio.create_task(accounts.callback_manual_code(Callback(), State()))
+        task = asyncio.create_task(steam_challenge.callback_manual_code(Callback(), State()))
         await client.login_started.wait()
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
@@ -685,7 +685,8 @@ def test_manual_code_cancellation_closes_untransferred_client(monkeypatch) -> No
 
 def test_manual_code_cancellation_after_state_commit_clears_transferred_client(monkeypatch) -> None:
     from guardbot.bot import pending_challenges
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import steam_challenge
+    from guardbot.steam.client import LoginConfirmType
     from guardbot.bot.states import SteamChallengeFlow
 
     class Session:
@@ -700,7 +701,7 @@ def test_manual_code_cancellation_after_state_commit_clears_transferred_client(m
             self.closed = False
 
         async def login(self):
-            return accounts.LoginConfirmType.mobile
+            return LoginConfirmType.mobile
 
         async def close(self) -> None:
             self.closed = True
@@ -745,21 +746,21 @@ def test_manual_code_cancellation_after_state_commit_clears_transferred_client(m
 
     client = Client()
     mafile = SimpleNamespace(id=1, account_name="account")
-    monkeypatch.setattr(accounts, "AsyncSessionLocal", Session)
+    monkeypatch.setattr(steam_challenge, "AsyncSessionLocal", Session)
     monkeypatch.setattr(
-        accounts,
+        steam_challenge,
         "get_owned_mafile",
         lambda *args, **kwargs: _async_result(mafile),
     )
     monkeypatch.setattr(
-        accounts.SteamSessionManager,
+        steam_challenge.SteamSessionManager,
         "create_steam_client_from_db",
         lambda *args, **kwargs: _async_result(client),
     )
 
     async def scenario() -> None:
         state = State()
-        task = asyncio.create_task(accounts.callback_manual_code(Callback(), state))
+        task = asyncio.create_task(steam_challenge.callback_manual_code(Callback(), state))
         await edit_started.wait()
         assert await state.get_state() == SteamChallengeFlow.waiting_code.state
         assert pending_challenges.pending_challenge_count() == 1
@@ -777,7 +778,8 @@ def test_manual_code_cancellation_after_state_commit_clears_transferred_client(m
 
 def test_manual_code_cancellation_preserves_newer_replacement_state(monkeypatch) -> None:
     from guardbot.bot import pending_challenges
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import steam_challenge
+    from guardbot.steam.client import LoginConfirmType
     from guardbot.bot.states import SteamChallengeFlow
 
     class Session:
@@ -792,7 +794,7 @@ def test_manual_code_cancellation_preserves_newer_replacement_state(monkeypatch)
             self.closed = False
 
         async def login(self):
-            return accounts.LoginConfirmType.mobile
+            return LoginConfirmType.mobile
 
         async def close(self) -> None:
             self.closed = True
@@ -837,23 +839,23 @@ def test_manual_code_cancellation_preserves_newer_replacement_state(monkeypatch)
 
     challenge_client = Client()
     replacement_client = Client()
-    monkeypatch.setattr(accounts, "AsyncSessionLocal", Session)
+    monkeypatch.setattr(steam_challenge, "AsyncSessionLocal", Session)
     monkeypatch.setattr(
-        accounts,
+        steam_challenge,
         "get_owned_mafile",
         lambda *args, **kwargs: _async_result(
             SimpleNamespace(id=1, account_name="account")
         ),
     )
     monkeypatch.setattr(
-        accounts.SteamSessionManager,
+        steam_challenge.SteamSessionManager,
         "create_steam_client_from_db",
         lambda *args, **kwargs: _async_result(challenge_client),
     )
 
     async def scenario() -> None:
         state = State()
-        task = asyncio.create_task(accounts.callback_manual_code(Callback(), state))
+        task = asyncio.create_task(steam_challenge.callback_manual_code(Callback(), state))
         await edit_started.wait()
         original_token = (await state.get_data())["challenge_id"]
         replacement_token = await pending_challenges.publish_pending_challenge(

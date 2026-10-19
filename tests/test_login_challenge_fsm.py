@@ -319,13 +319,13 @@ def test_challenge_code_kinds_complete_login(
     offers_steam_guard_setup: bool,
 ) -> None:
     from guardbot.bot import pending_challenges
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import steam_challenge
     from guardbot.bot.states import SteamChallengeFlow
 
     user_id = 610
     client = Client()
     saved: list = []
-    _patch_successful_save(monkeypatch, accounts, saved)
+    _patch_successful_save(monkeypatch, steam_challenge, saved)
 
     async def scenario() -> None:
         state = FakeState()
@@ -339,7 +339,7 @@ def test_challenge_code_kinds_complete_login(
             ttl_seconds=60,
         )
         message = _code_message(user_id)
-        await accounts.receive_manual_steam_code(message, state)
+        await steam_challenge.receive_manual_steam_code(message, state)
 
         assert message.deleted == 1
         assert client.confirmed_codes == ["ABCDE"]
@@ -357,7 +357,7 @@ def test_challenge_code_kinds_complete_login(
 
 def test_unknown_challenge_kind_is_rejected_as_stale() -> None:
     from guardbot.bot import pending_challenges
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import steam_challenge
     from guardbot.bot.states import SteamChallengeFlow
 
     user_id = 611
@@ -375,7 +375,7 @@ def test_unknown_challenge_kind_is_rejected_as_stale() -> None:
             ttl_seconds=60,
         )
         message = _code_message(user_id)
-        await accounts.receive_manual_steam_code(message, state)
+        await steam_challenge.receive_manual_steam_code(message, state)
 
         assert client.confirmed_codes == []
         assert client.close_calls == 1
@@ -388,7 +388,7 @@ def test_unknown_challenge_kind_is_rejected_as_stale() -> None:
 
 def test_document_during_code_challenge_is_deleted_and_challenge_kept() -> None:
     from guardbot.bot import pending_challenges
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import steam_challenge
     from guardbot.bot.states import SteamChallengeFlow
 
     user_id = 612
@@ -424,7 +424,7 @@ def test_document_during_code_challenge_is_deleted_and_challenge_kept() -> None:
         )
         message = Message()
         try:
-            await accounts.reject_challenge_document(message, state)
+            await steam_challenge.reject_challenge_document(message, state)
             assert message.deleted == 1
             assert "Импортировать" in message.answers[-1]
             assert client.closed is False
@@ -508,7 +508,7 @@ def test_challenge_document_handler_is_registered_before_catch_all() -> None:
 
     from aiogram.types import Chat, Document, Message, User
 
-    from guardbot.bot.handlers import accounts, messages
+    from guardbot.bot.handlers import steam_challenge, messages
     from guardbot.bot.states import SteamChallengeFlow
 
     def make(message_id: int, **content) -> Message:
@@ -541,8 +541,8 @@ def test_challenge_document_handler_is_registered_before_catch_all() -> None:
             if handler.callback is callback
         )
 
-    document_index = index_of(accounts.reject_challenge_document)
-    code_index = index_of(accounts.receive_manual_steam_code)
+    document_index = index_of(steam_challenge.reject_challenge_document)
+    code_index = index_of(steam_challenge.receive_manual_steam_code)
     catch_all_index = index_of(messages.handle_messages)
     raw_state = SteamChallengeFlow.waiting_code.state
 
@@ -634,13 +634,13 @@ def test_mobile_challenge_success_does_not_claim_authenticator_inactive(
     monkeypatch,
 ) -> None:
     from guardbot.bot import pending_challenges
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import steam_challenge
     from guardbot.bot.states import SteamChallengeFlow
 
     user_id = 616
     client = Client()
     saved: list = []
-    _patch_successful_save(monkeypatch, accounts, saved)
+    _patch_successful_save(monkeypatch, steam_challenge, saved)
 
     async def scenario() -> None:
         state = FakeState()
@@ -654,7 +654,7 @@ def test_mobile_challenge_success_does_not_claim_authenticator_inactive(
             ttl_seconds=60,
         )
         message = _code_message(user_id)
-        await accounts.receive_manual_steam_code(message, state)
+        await steam_challenge.receive_manual_steam_code(message, state)
 
         text, options = message.status.edits[-1]
         assert "не активирован" not in text
