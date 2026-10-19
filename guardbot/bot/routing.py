@@ -13,6 +13,7 @@ from aiogram.dispatcher.event.handler import HandlerObject
 
 from guardbot.bot.handlers import (
     account_list,
+    account_settings,
     accounts,
     bulk_import,
     commands,
@@ -35,6 +36,7 @@ from guardbot.bot.handlers import (
 ROUTERS: tuple[Router, ...] = (
     menus.router,
     account_list.router,
+    account_settings.router,
     accounts.router,
     common.router,
     commands.router,

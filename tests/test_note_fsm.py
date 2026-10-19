@@ -106,7 +106,7 @@ def test_note_prompt_replaces_competing_workflows_and_sets_state_before_delivery
     monkeypatch,
 ) -> None:
     from guardbot.bot import pending_challenges
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import account_settings
     from guardbot.bot.states import NoteFlow
 
     session = _Session()
@@ -115,8 +115,8 @@ def test_note_prompt_replaces_competing_workflows_and_sets_state_before_delivery
     async def owned(*_args, **_kwargs):
         return mafile
 
-    monkeypatch.setattr(accounts, "AsyncSessionLocal", lambda: session)
-    monkeypatch.setattr(accounts, "get_owned_mafile", owned)
+    monkeypatch.setattr(account_settings, "AsyncSessionLocal", lambda: session)
+    monkeypatch.setattr(account_settings, "get_owned_mafile", owned)
 
     async def scenario() -> None:
         state = _state()
@@ -125,7 +125,7 @@ def test_note_prompt_replaces_competing_workflows_and_sets_state_before_delivery
         await state.update_data(stale=True)
         callback = _Callback(state)
         try:
-            await accounts.callback_change_note(callback, state)
+            await account_settings.callback_change_note(callback, state)
 
             assert client.close_calls == 1
             assert pending_challenges.current_pending_challenge_token(987) is None
@@ -140,22 +140,22 @@ def test_note_prompt_replaces_competing_workflows_and_sets_state_before_delivery
 
 @pytest.mark.parametrize("error", [RuntimeError("failed"), asyncio.CancelledError()])
 def test_note_prompt_failure_rolls_back_state(monkeypatch, error: BaseException) -> None:
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import account_settings
 
     session = _Session()
 
     async def owned(*_args, **_kwargs):
         return SimpleNamespace(id=42, account_name="account", notes=None)
 
-    monkeypatch.setattr(accounts, "AsyncSessionLocal", lambda: session)
-    monkeypatch.setattr(accounts, "get_owned_mafile", owned)
+    monkeypatch.setattr(account_settings, "AsyncSessionLocal", lambda: session)
+    monkeypatch.setattr(account_settings, "get_owned_mafile", owned)
 
     async def scenario() -> None:
         state = _state()
         callback = _Callback(state, error)
 
         with pytest.raises(type(error)):
-            await accounts.callback_change_note(callback, state)
+            await account_settings.callback_change_note(callback, state)
 
         assert await state.get_state() is None
         assert await state.get_data() == {}
@@ -164,11 +164,11 @@ def test_note_prompt_failure_rolls_back_state(monkeypatch, error: BaseException)
 
 
 def test_note_input_rejects_non_private_chat_before_delete_or_database(monkeypatch) -> None:
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import account_settings
     from guardbot.bot.states import NoteFlow
 
     monkeypatch.setattr(
-        accounts,
+        account_settings,
         "AsyncSessionLocal",
         lambda: pytest.fail("cross-chat input must not open a database session"),
     )
@@ -179,7 +179,7 @@ def test_note_input_rejects_non_private_chat_before_delete_or_database(monkeypat
         await state.set_data({"mafile_id": 42})
         message = _InputMessage("private note", chat_type="group")
 
-        await accounts.process_account_note(message, state)
+        await account_settings.process_account_note(message, state)
 
         assert message.deleted is False
         assert await state.get_state() == NoteFlow.waiting_note.state
@@ -190,7 +190,7 @@ def test_note_input_rejects_non_private_chat_before_delete_or_database(monkeypat
 
 
 def test_note_input_encrypts_and_clears_terminal_state(monkeypatch) -> None:
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import account_settings
     from guardbot.bot.states import NoteFlow
 
     session = _Session()
@@ -203,10 +203,10 @@ def test_note_input_encrypts_and_clears_terminal_state(monkeypatch) -> None:
     async def update_settings(*args):
         settings_updates.append(args)
 
-    monkeypatch.setattr(accounts, "AsyncSessionLocal", lambda: session)
-    monkeypatch.setattr(accounts, "get_owned_mafile", owned)
-    monkeypatch.setattr(accounts, "encrypt_value", lambda value: f"encrypted:{value}")
-    monkeypatch.setattr(accounts, "update_account_settings_message", update_settings)
+    monkeypatch.setattr(account_settings, "AsyncSessionLocal", lambda: session)
+    monkeypatch.setattr(account_settings, "get_owned_mafile", owned)
+    monkeypatch.setattr(account_settings, "encrypt_value", lambda value: f"encrypted:{value}")
+    monkeypatch.setattr(account_settings, "update_account_settings_message", update_settings)
 
     async def scenario() -> None:
         state = _state()
@@ -214,7 +214,7 @@ def test_note_input_encrypts_and_clears_terminal_state(monkeypatch) -> None:
         await state.set_data({"mafile_id": 42})
         message = _InputMessage("<i>private note</i>")
 
-        await accounts.process_account_note(message, state)
+        await account_settings.process_account_note(message, state)
 
         assert message.deleted is True
         assert mafile.notes == "encrypted:<i>private note</i>"
@@ -231,15 +231,15 @@ def test_note_input_encrypts_and_clears_terminal_state(monkeypatch) -> None:
 
 
 def test_note_deletion_failure_aborts_before_fsm_data_and_database(monkeypatch) -> None:
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import account_settings
     from guardbot.bot.states import NoteFlow
 
     async def deletion_failed(_message):
         return False
 
-    monkeypatch.setattr(accounts, "delete_secret_message_or_abort", deletion_failed)
+    monkeypatch.setattr(account_settings, "delete_secret_message_or_abort", deletion_failed)
     monkeypatch.setattr(
-        accounts,
+        account_settings,
         "AsyncSessionLocal",
         lambda: (_ for _ in ()).throw(AssertionError("database must not open")),
     )
@@ -256,7 +256,7 @@ def test_note_deletion_failure_aborts_before_fsm_data_and_database(monkeypatch) 
 
         state.get_data = forbidden_get_data
         try:
-            await accounts.process_account_note(message, state)
+            await account_settings.process_account_note(message, state)
         finally:
             state.get_data = original_get_data
 
@@ -300,13 +300,13 @@ def test_direct_note_command_deletion_failure_aborts_before_database(monkeypatch
 
 
 def test_note_non_text_fallback_precedes_legacy_catch_all(monkeypatch) -> None:
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import account_settings
     from guardbot.bot.states import NoteFlow
 
     script = """
 import tgbot
 from guardbot.bot import routing
-from guardbot.bot.handlers.accounts import reject_note_non_text
+from guardbot.bot.handlers.account_settings import reject_note_non_text
 from guardbot.bot.handlers.messages import handle_messages
 routing.setup_routers(tgbot.dp)  # what the launcher's main() does
 callbacks = [handler.callback for handler in routing.ordered_handlers(tgbot.dp, "message")]
@@ -334,7 +334,7 @@ assert callbacks.index(reject_note_non_text) < callbacks.index(handle_messages)
     async def already_deleted(_message):
         return True
 
-    monkeypatch.setattr(accounts, "delete_secret_message_or_abort", already_deleted)
+    monkeypatch.setattr(account_settings, "delete_secret_message_or_abort", already_deleted)
 
     async def scenario() -> None:
         state = _state()
@@ -342,7 +342,7 @@ assert callbacks.index(reject_note_non_text) < callbacks.index(handle_messages)
         await state.set_data({"mafile_id": 42})
         message = DocumentMessage()
 
-        await accounts.reject_note_non_text(message, state)
+        await account_settings.reject_note_non_text(message, state)
 
         assert await state.get_state() == NoteFlow.waiting_note.state
         assert await state.get_data() == {"mafile_id": 42}

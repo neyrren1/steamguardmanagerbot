@@ -377,7 +377,7 @@ def test_proxy_cancel_accepts_max_database_integer_for_owner_lookup(monkeypatch)
 
 
 def test_account_settings_escapes_redacted_proxy(monkeypatch) -> None:
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import account_settings
 
     mafile = SimpleNamespace(
         id=42,
@@ -415,16 +415,16 @@ def test_account_settings_escapes_redacted_proxy(monkeypatch) -> None:
         async def edit_text(self, text: str, **_kwargs) -> None:
             self.text = text
 
-    monkeypatch.setattr(accounts, "decrypt_value", lambda _value: "proxy")
+    monkeypatch.setattr(account_settings, "decrypt_value", lambda _value: "proxy")
     monkeypatch.setattr(
-        accounts,
+        account_settings,
         "redact_proxy_url",
         lambda _value: "http://<b>:***@example.com:8080",
     )
 
     async def scenario() -> None:
         message = SettingsMessage()
-        await accounts.update_account_settings_message(
+        await account_settings.update_account_settings_message(
             message,
             mafile,
             SettingsSession(),
@@ -437,7 +437,7 @@ def test_account_settings_escapes_redacted_proxy(monkeypatch) -> None:
 
 
 def test_account_detail_escapes_redacted_proxy(monkeypatch) -> None:
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import account_settings
 
     mafile = SimpleNamespace(
         id=42,
@@ -505,18 +505,18 @@ def test_account_detail_escapes_redacted_proxy(monkeypatch) -> None:
     async def feedback(*_args, **_kwargs):
         return None
 
-    monkeypatch.setattr(accounts, "AsyncSessionLocal", DetailSession)
-    monkeypatch.setattr(accounts, "get_owned_mafile", owned)
-    monkeypatch.setattr(accounts, "callback_feedback", feedback)
-    monkeypatch.setattr(accounts, "decrypt_value", lambda value: "proxy" if value else None)
+    monkeypatch.setattr(account_settings, "AsyncSessionLocal", DetailSession)
+    monkeypatch.setattr(account_settings, "get_owned_mafile", owned)
+    monkeypatch.setattr(account_settings, "callback_feedback", feedback)
+    monkeypatch.setattr(account_settings, "decrypt_value", lambda value: "proxy" if value else None)
     monkeypatch.setattr(
-        accounts,
+        account_settings,
         "redact_proxy_url",
         lambda _value: "http://<b>:***@example.com:8080",
     )
 
     async def scenario() -> None:
-        await accounts.callback_account_detail(callback)
+        await account_settings.callback_account_detail(callback)
 
         assert "http://&lt;b&gt;:***@example.com:8080" in callback.message.text
         assert "http://<b>:***@example.com:8080" not in callback.message.text
