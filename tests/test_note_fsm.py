@@ -18,6 +18,29 @@ def _state(user_id: int = 987) -> FSMContext:
     )
 
 
+class _ChallengeClient:
+    def __init__(self) -> None:
+        self.close_calls = 0
+
+    async def close(self) -> None:
+        self.close_calls += 1
+
+
+async def _publish_challenge(user_id: int, state, client) -> str:
+    from guardbot.bot import pending_challenges
+    from guardbot.bot.states import SteamChallengeFlow
+
+    return await pending_challenges.publish_pending_challenge(
+        user_id=user_id,
+        mafile_id=42,
+        kind="email",
+        client=client,
+        state=state,
+        fsm_state=SteamChallengeFlow.waiting_code,
+        ttl_seconds=60,
+    )
+
+
 class _Session:
     def __init__(self) -> None:
         self.commits = 0
@@ -80,7 +103,7 @@ def test_note_dialog_no_longer_uses_legacy_dispatch() -> None:
 def test_note_prompt_replaces_competing_workflows_and_sets_state_before_delivery(
     monkeypatch,
 ) -> None:
-    from guardbot.bot import runtime
+    from guardbot.bot import pending_challenges
     from guardbot.bot.handlers import accounts
     from guardbot.bot.states import NoteFlow
 
@@ -95,18 +118,20 @@ def test_note_prompt_replaces_competing_workflows_and_sets_state_before_delivery
 
     async def scenario() -> None:
         state = _state()
+        client = _ChallengeClient()
+        await _publish_challenge(987, state, client)
         await state.update_data(stale=True)
-        runtime.user_states[987] = {"state": "waiting_trade_notify_interval"}
         callback = _Callback(state)
         try:
             await accounts.callback_change_note(callback, state)
 
-            assert 987 not in runtime.user_states
+            assert client.close_calls == 1
+            assert pending_challenges.current_pending_challenge_token(987) is None
             assert callback.message.states_during_edit == [NoteFlow.waiting_note.state]
             assert await state.get_state() == NoteFlow.waiting_note.state
             assert await state.get_data() == {"mafile_id": 42}
         finally:
-            runtime.user_states.pop(987, None)
+            await pending_challenges.clear_pending_challenges_for_user(987, state)
 
     asyncio.run(scenario())
 

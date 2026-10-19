@@ -259,7 +259,6 @@ def test_manual_code_callback_arms_typed_state_before_prompt(monkeypatch) -> Non
                 (SteamChallengeFlow.waiting_code.state, data)
             ]
             assert pending_challenges.pending_challenge_count() == 1
-            assert user_id not in runtime.user_states
             assert client.closed is False
         finally:
             await runtime.clear_user_workflows(user_id, state)

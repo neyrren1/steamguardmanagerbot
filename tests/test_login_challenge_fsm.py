@@ -100,7 +100,7 @@ def _patch_client_factory(monkeypatch, accounts, client) -> None:
 
 
 def test_email_login_publishes_typed_challenge_for_explicit_user(monkeypatch) -> None:
-    from guardbot.bot import pending_challenges, runtime
+    from guardbot.bot import pending_challenges
     from guardbot.bot.handlers import accounts
     from guardbot.bot.states import SteamChallengeFlow
 
@@ -131,8 +131,6 @@ def test_email_login_publishes_typed_challenge_for_explicit_user(monkeypatch) ->
             )
             assert pending_challenges.current_pending_challenge_token(BOT_ID) is None
             assert client.closed is False
-            assert user_id not in runtime.user_states
-            assert BOT_ID not in runtime.user_states
             prompt, options = message.status.edits[-1]
             assert "почт" in prompt.lower()
             assert "account_detail_1" in _callback_datas(options["reply_markup"])
@@ -143,7 +141,7 @@ def test_email_login_publishes_typed_challenge_for_explicit_user(monkeypatch) ->
 
 
 def test_mobile_login_without_secret_publishes_mobile_challenge(monkeypatch) -> None:
-    from guardbot.bot import pending_challenges, runtime
+    from guardbot.bot import pending_challenges
     from guardbot.bot.handlers import accounts
     from guardbot.bot.states import SteamChallengeFlow
 
@@ -167,7 +165,6 @@ def test_mobile_login_without_secret_publishes_mobile_challenge(monkeypatch) -> 
             assert await state.get_state() == SteamChallengeFlow.waiting_code.state
             assert data["kind"] == "mobile"
             assert client.closed is False
-            assert user_id not in runtime.user_states
             _prompt, options = message.status.edits[-1]
             callback_datas = _callback_datas(options["reply_markup"])
             assert "import_mafile_for_1" in callback_datas
@@ -498,10 +495,6 @@ def test_legacy_login_challenge_helpers_and_writers_are_removed() -> None:
     for path in handlers.glob("*.py"):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
-            if isinstance(node, ast.Call):
-                target = node.func
-                name = getattr(target, "id", None) or getattr(target, "attr", None)
-                assert name != "set_legacy_user_state", path.name
             if isinstance(node, ast.Constant) and isinstance(node.value, str):
                 assert node.value not in {
                     "waiting_steam_code",

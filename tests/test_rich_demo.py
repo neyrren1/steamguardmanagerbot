@@ -174,16 +174,25 @@ def test_rich_demo_command_rejects_group_without_sending_demo() -> None:
     ]
 
 
-def test_group_rich_demo_clears_global_typed_and_legacy_workflows(
+@pytest.mark.parametrize("workflow", ["account_add", "steam_challenge"])
+def test_group_rich_demo_clears_global_typed_workflow(
     monkeypatch,
+    workflow: str,
 ) -> None:
     from aiogram import Bot
     from aiogram.methods import DeleteMessage, SendMessage
     from aiogram.types import MessageEntity
 
-    from guardbot.bot import runtime
+    from guardbot.bot import pending_challenges, runtime
     from guardbot.bot.handlers import rich_demo, messages  # noqa: F401
-    from guardbot.bot.states import AccountAddFlow
+    from guardbot.bot.states import AccountAddFlow, SteamChallengeFlow
+
+    class ChallengeClient:
+        def __init__(self) -> None:
+            self.close_calls = 0
+
+        async def close(self) -> None:
+            self.close_calls += 1
 
     user_id = 654_322
 
@@ -229,8 +238,20 @@ def test_group_rich_demo_clears_global_typed_and_legacy_workflows(
             chat_id=user_id,
             user_id=user_id,
         )
-        await state.set_state(AccountAddFlow.waiting_credentials)
-        runtime.user_states[user_id] = {"state": "waiting_steam_code"}
+        client = ChallengeClient()
+        await state.clear()
+        if workflow == "account_add":
+            await state.set_state(AccountAddFlow.waiting_credentials)
+        else:
+            await pending_challenges.publish_pending_challenge(
+                user_id=user_id,
+                mafile_id=42,
+                kind="email",
+                client=client,
+                state=state,
+                fsm_state=SteamChallengeFlow.waiting_code,
+                ttl_seconds=60,
+            )
         command = "/rich_demo"
         update = Update(
             update_id=1,
@@ -254,7 +275,9 @@ def test_group_rich_demo_clears_global_typed_and_legacy_workflows(
             await runtime.dp.feed_update(bot, update)
 
             assert await state.get_state() is None
-            assert user_id not in runtime.user_states
+            assert await state.get_data() == {}
+            assert pending_challenges.current_pending_challenge_token(user_id) is None
+            assert client.close_calls == int(workflow == "steam_challenge")
             feedback = [
                 call.text for call in bot.calls if isinstance(call, SendMessage)
             ]
@@ -262,8 +285,7 @@ def test_group_rich_demo_clears_global_typed_and_legacy_workflows(
                 "🔒 Демонстрация Rich Message доступна только в личном чате с ботом."
             ]
         finally:
-            await state.clear()
-            await runtime.clear_legacy_user_state(user_id)
+            await pending_challenges.clear_pending_challenges_for_user(user_id, state)
             await bot.session.close()
 
     asyncio.run(scenario())

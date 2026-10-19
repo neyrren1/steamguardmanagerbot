@@ -11,9 +11,48 @@ import pytest
 class FakeState:
     def __init__(self) -> None:
         self.clear_calls = 0
+        self.raw_state = None
+        self.data: dict = {}
 
     async def clear(self) -> None:
         self.clear_calls += 1
+        self.raw_state = None
+        self.data = {}
+
+    async def set_state(self, value) -> None:
+        self.raw_state = value.state if hasattr(value, "state") else value
+
+    async def set_data(self, value: dict) -> None:
+        self.data = dict(value)
+
+    async def get_state(self):
+        return self.raw_state
+
+    async def get_data(self) -> dict:
+        return dict(self.data)
+
+
+class _ChallengeClient:
+    def __init__(self) -> None:
+        self.close_calls = 0
+
+    async def close(self) -> None:
+        self.close_calls += 1
+
+
+async def _publish_challenge(user_id: int, state, client) -> str:
+    from guardbot.bot import pending_challenges
+    from guardbot.bot.states import SteamChallengeFlow
+
+    return await pending_challenges.publish_pending_challenge(
+        user_id=user_id,
+        mafile_id=42,
+        kind="email",
+        client=client,
+        state=state,
+        fsm_state=SteamChallengeFlow.waiting_code,
+        ttl_seconds=60,
+    )
 
 
 class FakeMessage:
@@ -33,26 +72,30 @@ class FakeMessage:
 
 
 @pytest.mark.parametrize("command_name", ["commands", "rich_demo"])
-def test_local_navigation_commands_clear_both_workflow_stores(command_name: str) -> None:
-    from guardbot.bot import runtime
+def test_local_navigation_commands_clear_pending_challenge(command_name: str) -> None:
+    from guardbot.bot import pending_challenges
     from guardbot.bot.handlers.common import cmd_commands
     from guardbot.bot.handlers.rich_demo import cmd_rich_demo
 
     user_id = 781
     message = FakeMessage(user_id)
     state = FakeState()
-    runtime.user_states[user_id] = {"state": "waiting_login_code"}
+    client = _ChallengeClient()
 
     async def scenario() -> None:
+        await _publish_challenge(user_id, state, client)
         try:
             if command_name == "commands":
                 await cmd_commands(message, state)
             else:
                 await cmd_rich_demo(message, state)
             assert state.clear_calls == 1
-            assert user_id not in runtime.user_states
+            assert client.close_calls == 1
+            assert pending_challenges.current_pending_challenge_token(user_id) is None
+            assert await state.get_state() is None
+            assert await state.get_data() == {}
         finally:
-            runtime.user_states.pop(user_id, None)
+            await pending_challenges.clear_pending_challenges_for_user(user_id, state)
 
     asyncio.run(scenario())
 

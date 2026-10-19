@@ -1,3 +1,4 @@
+import ast
 from pathlib import Path
 
 import pytest
@@ -10,14 +11,25 @@ _REMOVED_STATES = (
     "waiting_password_for_mafile",
     "waiting_mafile",
     "waiting_steam_code_manual",
+    "waiting_steam_code",
+    "waiting_email_code",
+    "waiting_steam_code_or_mafile",
 )
 
 
 @pytest.mark.parametrize("legacy_state", _REMOVED_STATES)
 def test_unreachable_manual_secret_states_are_removed(legacy_state: str) -> None:
-    from guardbot.bot import runtime
+    production_root = Path(__file__).parents[1] / "guardbot"
+    references = []
+    for source_path in production_root.rglob("*.py"):
+        tree = ast.parse(source_path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Constant) and node.value == legacy_state:
+                references.append(
+                    f"{source_path.relative_to(production_root)}:{node.lineno}"
+                )
 
-    assert legacy_state not in runtime._SECRET_LEGACY_STATES
+    assert references == []
 
 
 def test_removed_manual_secret_states_are_absent_from_production_sources() -> None:

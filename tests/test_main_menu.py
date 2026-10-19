@@ -33,6 +33,29 @@ def _fsm_context(user_id: int) -> FSMContext:
     )
 
 
+class _ChallengeClient:
+    def __init__(self) -> None:
+        self.close_calls = 0
+
+    async def close(self) -> None:
+        self.close_calls += 1
+
+
+async def _publish_challenge(user_id: int, state, client) -> str:
+    from guardbot.bot import pending_challenges
+    from guardbot.bot.states import SteamChallengeFlow
+
+    return await pending_challenges.publish_pending_challenge(
+        user_id=user_id,
+        mafile_id=42,
+        kind="email",
+        client=client,
+        state=state,
+        fsm_state=SteamChallengeFlow.waiting_code,
+        ttl_seconds=60,
+    )
+
+
 def _block_buttons(message: InputRichMessage):
     return [
         button
@@ -532,18 +555,22 @@ def test_cancel_account_addition_acknowledges_once_with_notice(monkeypatch) -> N
 
 
 def test_add_account_button_sets_state_before_showing_credentials_prompt() -> None:
+    from guardbot.bot import pending_challenges
     from guardbot.bot.handlers import accounts
     from guardbot.bot.states import AccountAddFlow
 
     user_id = 987
     state = _fsm_context(user_id)
+    client = _ChallengeClient()
 
     class Message:
         chat = SimpleNamespace(type="private")
 
         async def edit_text(self, *args, **kwargs):
             assert await state.get_state() == AccountAddFlow.waiting_credentials.state
-            assert user_id not in accounts.user_states
+            assert await state.get_data() == {}
+            assert client.close_calls == 1
+            assert pending_challenges.current_pending_challenge_token(user_id) is None
 
     class Callback:
         def __init__(self) -> None:
@@ -555,11 +582,15 @@ def test_add_account_button_sets_state_before_showing_credentials_prompt() -> No
             self.answers += 1
 
     callback = Callback()
-    accounts.user_states[user_id] = {"state": "waiting_group_name"}
 
     async def scenario() -> None:
-        await accounts.callback_add_account(callback, state)
-        assert callback.answers == 1
+        await _publish_challenge(user_id, state, client)
+        try:
+            await accounts.callback_add_account(callback, state)
+            assert callback.answers == 1
+            assert client.close_calls == 1
+        finally:
+            await pending_challenges.clear_pending_challenges_for_user(user_id, state)
 
     asyncio.run(scenario())
 
@@ -676,7 +707,6 @@ def test_back_to_start_edits_message_to_rich_main_menu(monkeypatch) -> None:
             self.answers += 1
 
     callback = Callback()
-    runtime.user_states.pop(callback.from_user.id, None)
     monkeypatch.setattr(runtime, "AsyncSessionLocal", Session)
     monkeypatch.setattr(runtime, "edit_main_menu", edit_main_menu)
 
@@ -690,6 +720,7 @@ def test_back_to_start_edits_message_to_rich_main_menu(monkeypatch) -> None:
 
 
 def test_cancel_state_returns_to_rich_main_menu(monkeypatch) -> None:
+    from guardbot.bot import pending_challenges
     from guardbot.bot.handlers import common
 
     accounts = [_account(5, guard=True)]
@@ -738,13 +769,31 @@ def test_cancel_state_returns_to_rich_main_menu(monkeypatch) -> None:
             self.answers.append(text)
 
     callback = Callback()
-    common.user_states[callback.from_user.id] = {"state": "pending"}
+    client = _ChallengeClient()
+    challenge_state = _fsm_context(callback.from_user.id)
     monkeypatch.setattr(common, "AsyncSessionLocal", Session)
     monkeypatch.setattr(common, "edit_main_menu", edit_main_menu)
 
-    asyncio.run(common.callback_cancel_state_to_start(callback))
+    async def scenario() -> None:
+        await _publish_challenge(callback.from_user.id, challenge_state, client)
+        try:
+            await common.callback_cancel_state_to_start(callback)
+            assert client.close_calls == 1
+            assert (
+                pending_challenges.current_pending_challenge_token(
+                    callback.from_user.id
+                )
+                is None
+            )
+        finally:
+            await pending_challenges.clear_pending_challenges_for_user(
+                callback.from_user.id,
+                challenge_state,
+            )
 
-    assert callback.from_user.id not in common.user_states
+    asyncio.run(scenario())
+
+    assert client.close_calls == 1
     assert callback.answers == [None]
     assert callback.message.feedback == ["❌ Действие отменено"]
     assert len(edited_views) == 1

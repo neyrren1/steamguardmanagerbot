@@ -25,6 +25,29 @@ def _state(user_id: int = 987) -> FSMContext:
     )
 
 
+class _ChallengeClient:
+    def __init__(self) -> None:
+        self.close_calls = 0
+
+    async def close(self) -> None:
+        self.close_calls += 1
+
+
+async def _publish_challenge(user_id: int, state, client) -> str:
+    from guardbot.bot import pending_challenges
+    from guardbot.bot.states import SteamChallengeFlow
+
+    return await pending_challenges.publish_pending_challenge(
+        user_id=user_id,
+        mafile_id=42,
+        kind="email",
+        client=client,
+        state=state,
+        fsm_state=SteamChallengeFlow.waiting_code,
+        ttl_seconds=60,
+    )
+
+
 class _PromptMessage:
     def __init__(self, state: FSMContext, *, error: BaseException | None = None) -> None:
         self.state = state
@@ -136,26 +159,27 @@ def test_create_group_sets_state_before_prompt() -> None:
     asyncio.run(scenario())
 
 
-def test_create_group_clears_competing_legacy_state_before_prompt() -> None:
-    from guardbot.bot import runtime
+def test_create_group_closes_pending_challenge_before_prompt() -> None:
+    from guardbot.bot import pending_challenges
     from guardbot.bot.handlers import groups
     from guardbot.bot.states import GroupFlow
 
     async def scenario() -> None:
         state = _state()
         callback = _Callback(state, "create_group")
-        runtime.user_states[987] = {
-            "state": "waiting_trade_notify_interval",
-            "mafile_id": 42,
-        }
+        client = _ChallengeClient()
+        await _publish_challenge(987, state, client)
 
         try:
             await groups.callback_create_group(callback, state)
 
-            assert 987 not in runtime.user_states
+            assert client.close_calls == 1
+            assert pending_challenges.current_pending_challenge_token(987) is None
+            assert callback.message.states_during_edit == [GroupFlow.waiting_name.state]
             assert await state.get_state() == GroupFlow.waiting_name.state
+            assert await state.get_data() == {}
         finally:
-            runtime.user_states.pop(987, None)
+            await pending_challenges.clear_pending_challenges_for_user(987, state)
 
     asyncio.run(scenario())
 
@@ -214,7 +238,6 @@ def test_rename_group_rolls_back_partial_fsm_initialization() -> None:
 
 
 def test_groups_menu_cancels_group_flow_before_render(monkeypatch) -> None:
-    from guardbot.bot import runtime
     from guardbot.bot.handlers import groups
     from guardbot.bot.states import GroupFlow
 
@@ -231,7 +254,6 @@ def test_groups_menu_cancels_group_flow_before_render(monkeypatch) -> None:
         state = _state()
         await state.set_state(GroupFlow.waiting_rename)
         await state.set_data({"group_id": 42})
-        runtime.user_states[987] = {"state": "waiting_trade_notify_interval"}
         callback = _Callback(state, "groups_menu")
 
         try:
@@ -240,16 +262,14 @@ def test_groups_menu_cancels_group_flow_before_render(monkeypatch) -> None:
 
             assert await state.get_state() is None
             assert await state.get_data() == {}
-            assert 987 not in runtime.user_states
         finally:
-            runtime.user_states.pop(987, None)
+            await state.clear()
 
     asyncio.run(scenario())
 
 
 @pytest.mark.parametrize("target", ["start", "groups"])
 def test_navigation_commands_cancel_group_flow_before_work(monkeypatch, target: str) -> None:
-    from guardbot.bot import runtime
     from guardbot.bot.handlers import bulk_import, common
     from guardbot.bot.states import GroupFlow
 
@@ -271,7 +291,6 @@ def test_navigation_commands_cancel_group_flow_before_work(monkeypatch, target: 
     async def scenario() -> None:
         state = _state()
         await state.set_state(GroupFlow.waiting_name)
-        runtime.user_states[987] = {"state": "waiting_trade_notify_interval"}
         message = _InputMessage()
         message.chat = SimpleNamespace(type="private")
         message.from_user = SimpleNamespace(
@@ -289,16 +308,14 @@ def test_navigation_commands_cancel_group_flow_before_work(monkeypatch, target: 
 
             assert await state.get_state() is None
             assert await state.get_data() == {}
-            assert 987 not in runtime.user_states
         finally:
-            runtime.user_states.pop(987, None)
+            await state.clear()
 
     asyncio.run(scenario())
 
 
 @pytest.mark.parametrize("target", ["start", "groups"])
 def test_non_private_navigation_commands_cancel_global_group_flow(target: str) -> None:
-    from guardbot.bot import runtime
     from guardbot.bot.handlers import bulk_import, common
     from guardbot.bot.states import GroupFlow
 
@@ -306,7 +323,6 @@ def test_non_private_navigation_commands_cancel_global_group_flow(target: str) -
         state = _state()
         await state.set_state(GroupFlow.waiting_name)
         await state.set_data({"stale": True})
-        runtime.user_states[987] = {"state": "waiting_trade_notify_interval"}
         message = _InputMessage()
         message.chat = SimpleNamespace(type="group")
         message.from_user = SimpleNamespace(
@@ -323,10 +339,9 @@ def test_non_private_navigation_commands_cancel_global_group_flow(target: str) -
 
             assert await state.get_state() is None
             assert await state.get_data() == {}
-            assert 987 not in runtime.user_states
             assert "личном чате" in message.answers[0][0]
         finally:
-            runtime.user_states.pop(987, None)
+            await state.clear()
 
     asyncio.run(scenario())
 

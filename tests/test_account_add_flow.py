@@ -20,6 +20,29 @@ def _state(user_id: int = 987) -> FSMContext:
     )
 
 
+class _ChallengeClient:
+    def __init__(self) -> None:
+        self.close_calls = 0
+
+    async def close(self) -> None:
+        self.close_calls += 1
+
+
+async def _publish_challenge(user_id: int, state, client) -> str:
+    from guardbot.bot import pending_challenges
+    from guardbot.bot.states import SteamChallengeFlow
+
+    return await pending_challenges.publish_pending_challenge(
+        user_id=user_id,
+        mafile_id=42,
+        kind="email",
+        client=client,
+        state=state,
+        fsm_state=SteamChallengeFlow.waiting_code,
+        ttl_seconds=60,
+    )
+
+
 def test_dispatcher_serializes_each_users_fsm_updates() -> None:
     from guardbot.bot import runtime
 
@@ -264,11 +287,12 @@ def test_post_commit_notification_failure_is_not_reported_as_add_failure(
 
 
 def test_add_command_starts_local_flow_without_proxy(monkeypatch) -> None:
-    from guardbot.bot import runtime
+    from guardbot.bot import pending_challenges, runtime
     from guardbot.bot.handlers import accounts
     from guardbot.bot.states import AccountAddFlow
 
     state = _state()
+    client = _ChallengeClient()
 
     class Message:
         def __init__(self) -> None:
@@ -285,20 +309,25 @@ def test_add_command_starts_local_flow_without_proxy(monkeypatch) -> None:
         return False, None
 
     monkeypatch.setattr(runtime, "check_proxy_available", no_proxy)
-    accounts.user_states[987] = {"state": "waiting_group_name"}
 
     async def scenario() -> None:
         message = Message()
+        await _publish_challenge(987, state, client)
 
-        await accounts.cmd_add_steam(message, state)
+        try:
+            await accounts.cmd_add_steam(message, state)
 
-        assert await state.get_state() == AccountAddFlow.waiting_credentials.state
-        assert 987 not in accounts.user_states
-        assert message.states_during_answer == [
-            AccountAddFlow.waiting_credentials.state
-        ]
-        assert "account_name:password" in message.answers[0][0]
-        assert "Нет доступного прокси" not in message.answers[0][0]
+            assert await state.get_state() == AccountAddFlow.waiting_credentials.state
+            assert await state.get_data() == {}
+            assert client.close_calls == 1
+            assert pending_challenges.current_pending_challenge_token(987) is None
+            assert message.states_during_answer == [
+                AccountAddFlow.waiting_credentials.state
+            ]
+            assert "account_name:password" in message.answers[0][0]
+            assert "Нет доступного прокси" not in message.answers[0][0]
+        finally:
+            await pending_challenges.clear_pending_challenges_for_user(987, state)
 
     asyncio.run(scenario())
 
@@ -478,44 +507,5 @@ def test_dispatcher_routes_add_command_and_credentials_through_fsm(
         finally:
             await state.clear()
             await bot.session.close()
-
-    asyncio.run(scenario())
-
-
-def test_legacy_flow_takes_priority_and_clears_concurrent_fsm() -> None:
-    from guardbot.bot import runtime
-    from guardbot.bot.states import AccountAddFlow
-
-    async def scenario() -> None:
-        state = _state()
-        await state.set_state(AccountAddFlow.waiting_credentials)
-        runtime.user_states[987] = {"state": "waiting_group_name"}
-        calls = []
-
-        async def handler(event, data):
-            calls.append(data["raw_state"])
-            return "handled"
-
-        event = SimpleNamespace(
-            message=None,
-            callback_query=SimpleNamespace(
-                from_user=SimpleNamespace(id=987),
-                data="unlock_bot",
-                message=SimpleNamespace(chat=SimpleNamespace(type="private")),
-            ),
-        )
-        data = {
-            "state": state,
-            "raw_state": await state.get_state(),
-        }
-
-        try:
-            result = await runtime.LockCheckMiddleware()(handler, event, data)
-            assert result == "handled"
-            assert calls == [None]
-            assert await state.get_state() is None
-        finally:
-            runtime.user_states.pop(987, None)
-            await state.clear()
 
     asyncio.run(scenario())

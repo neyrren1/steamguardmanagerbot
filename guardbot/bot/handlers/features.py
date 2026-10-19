@@ -14,17 +14,14 @@ from guardbot.bot.runtime import (
     calculate_steam_price,
     check_proxy_available,
     close_owned_resource,
-    clear_legacy_user_state,
     clear_user_workflows,
     dp,
     get_item_price,
     get_inventory_context_id,
     process_inventory_items_universal,
-    set_legacy_user_state,
     show_recovery_status,
     start_trade_check_task,
     stop_trade_check_task,
-    user_states,
 )
 from guardbot.bot.states import BotPasswordFlow, TradeNotificationFlow, UnlockFlow
 from guardbot.config import STEAM_CURRENCIES, logger
@@ -3020,7 +3017,7 @@ async def callback_unlock_bot(callback: CallbackQuery, state: FSMContext):
         return
 
     await callback_feedback(callback)
-    await clear_legacy_user_state(callback.from_user.id)
+    await clear_user_workflows(callback.from_user.id, state)
     await state.set_state(UnlockFlow.waiting_password)
 
     try:

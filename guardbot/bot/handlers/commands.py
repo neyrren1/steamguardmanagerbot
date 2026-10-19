@@ -16,14 +16,11 @@ from guardbot.bot.handlers.common import cmd_start_help
 from guardbot.bot.runtime import (
     callback_feedback,
     check_proxy_available,
-    clear_legacy_user_state,
     clear_user_workflows,
     delete_secret_message_or_abort,
     dp,
-    set_legacy_user_state,
     start_trade_check_task,
     stop_trade_check_task,
-    user_states,
 )
 from guardbot.bot.states import BotPasswordFlow, TradeNotificationFlow, UnlockFlow
 from guardbot.config import logger
@@ -1571,8 +1568,7 @@ async def cmd_lock(message: Message, state: FSMContext):
         user.last_activity = None  # Блокируем
         await session.commit()
 
-    await clear_legacy_user_state(telegram_id)
-    await state.clear()
+    await clear_user_workflows(telegram_id, state)
     await message.answer(
         "🔒 <b>БОТ ЗАБЛОКИРОВАН</b>\n\n"
         "Для разблокировки используйте:\n"
@@ -1608,7 +1604,7 @@ async def cmd_unlock(
 
     if not password:
         # Если пароль не передан — запрашиваем
-        await clear_legacy_user_state(telegram_id)
+        await clear_user_workflows(telegram_id, state)
         await state.set_state(UnlockFlow.waiting_password)
 
         try:
@@ -1634,8 +1630,7 @@ async def cmd_unlock(
         user = result.scalar_one_or_none()
 
         if not user or not user.bot_password:
-            await clear_legacy_user_state(telegram_id)
-            await state.clear()
+            await clear_user_workflows(telegram_id, state)
             await message.answer(
                 "❌ <b>Пароль не установлен!</b>\n\n"
                 "Сначала установите пароль:\n"
@@ -1668,8 +1663,7 @@ async def cmd_unlock(
         user.last_activity = datetime.now(UTC).replace(tzinfo=None)
         await session.commit()
 
-    await clear_legacy_user_state(telegram_id)
-    await state.clear()
+    await clear_user_workflows(telegram_id, state)
     # Сообщение об успешной разблокировке
     await message.answer("✅ <b>Бот разблокирован!</b>", parse_mode="HTML")
 
@@ -1684,8 +1678,7 @@ async def callback_cancel_unlock(
 ):
     """Cancel password entry without exposing account data."""
     await callback_feedback(callback)
-    await clear_legacy_user_state(callback.from_user.id)
-    await state.clear()
+    await clear_user_workflows(callback.from_user.id, state)
     await callback.message.edit_text(
         "🔒 <b>БОТ ЗАБЛОКИРОВАН</b>\n\n"
         "Для разблокировки используйте:\n"

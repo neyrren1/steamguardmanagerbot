@@ -23,6 +23,29 @@ class FakeState:
         self.data = {}
 
 
+class _ChallengeClient:
+    def __init__(self) -> None:
+        self.close_calls = 0
+
+    async def close(self) -> None:
+        self.close_calls += 1
+
+
+async def _publish_challenge(user_id: int, state, client) -> str:
+    from guardbot.bot import pending_challenges
+    from guardbot.bot.states import SteamChallengeFlow
+
+    return await pending_challenges.publish_pending_challenge(
+        user_id=user_id,
+        mafile_id=42,
+        kind="email",
+        client=client,
+        state=state,
+        fsm_state=SteamChallengeFlow.waiting_code,
+        ttl_seconds=60,
+    )
+
+
 class PromptMessage:
     def __init__(self, state: FakeState, user_id: int = 9901) -> None:
         self.state = state
@@ -62,26 +85,27 @@ def test_legacy_waiting_mafile_has_no_production_references() -> None:
 def test_import_command_starts_empty_typed_flow(monkeypatch) -> None:
     import asyncio
 
-    from guardbot.bot import runtime
+    from guardbot.bot import pending_challenges
     from guardbot.bot.handlers import imports
     from guardbot.bot.states import NewMaFileImportFlow
 
     user_id = 9901
     state = FakeState()
     message = PromptMessage(state, user_id)
-    runtime.user_states[user_id] = {"state": "waiting_steam_code"}
+    client = _ChallengeClient()
 
     async def scenario() -> None:
+        await _publish_challenge(user_id, state, client)
         try:
             await imports.cmd_import_mafile(message, state)
             assert message.deleted == 1
-            assert user_id not in runtime.user_states
+            assert client.close_calls == 1
+            assert pending_challenges.current_pending_challenge_token(user_id) is None
             assert await state.get_state() == NewMaFileImportFlow.waiting_document.state
             assert await state.get_data() == {}
             assert message.answers
         finally:
-            await state.clear()
-            await runtime.clear_legacy_user_state(user_id)
+            await pending_challenges.clear_pending_challenges_for_user(user_id, state)
 
     asyncio.run(scenario())
 
@@ -255,21 +279,22 @@ def test_new_account_import_encrypts_empty_password_without_steam_network(
     assert "AsyncSteamMobile" not in Path(imports.__file__).read_text(encoding="utf-8")
 
 
-def test_import_prompt_failure_rolls_back_both_state_stores() -> None:
+def test_import_prompt_failure_rolls_back_and_closes_challenge() -> None:
     import asyncio
 
-    from guardbot.bot import runtime
+    from guardbot.bot import pending_challenges
     from guardbot.bot.handlers import imports
 
     user_id = 9902
     state = FakeState()
-    runtime.user_states[user_id] = {"state": "waiting_steam_code"}
+    client = _ChallengeClient()
 
     class FailingMessage(PromptMessage):
         async def answer(self, text: str, **_kwargs):
             raise RuntimeError("prompt failed")
 
     async def scenario() -> None:
+        await _publish_challenge(user_id, state, client)
         try:
             try:
                 await imports.cmd_import_mafile(FailingMessage(state, user_id), state)
@@ -279,10 +304,10 @@ def test_import_prompt_failure_rolls_back_both_state_stores() -> None:
                 raise AssertionError("prompt failure did not propagate")
             assert await state.get_state() is None
             assert await state.get_data() == {}
-            assert user_id not in runtime.user_states
+            assert client.close_calls == 1
+            assert pending_challenges.current_pending_challenge_token(user_id) is None
         finally:
-            await state.clear()
-            await runtime.clear_legacy_user_state(user_id)
+            await pending_challenges.clear_pending_challenges_for_user(user_id, state)
 
     asyncio.run(scenario())
 

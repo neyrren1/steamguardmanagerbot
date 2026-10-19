@@ -18,6 +18,29 @@ def _state() -> FSMContext:
     )
 
 
+class _ChallengeClient:
+    def __init__(self) -> None:
+        self.close_calls = 0
+
+    async def close(self) -> None:
+        self.close_calls += 1
+
+
+async def _publish_challenge(user_id: int, state, client) -> str:
+    from guardbot.bot import pending_challenges
+    from guardbot.bot.states import SteamChallengeFlow
+
+    return await pending_challenges.publish_pending_challenge(
+        user_id=user_id,
+        mafile_id=42,
+        kind="email",
+        client=client,
+        state=state,
+        fsm_state=SteamChallengeFlow.waiting_code,
+        ttl_seconds=60,
+    )
+
+
 class PromptMessage:
     chat = SimpleNamespace(type="private")
 
@@ -54,26 +77,28 @@ def test_password_callbacks_start_typed_flow_before_prompt(
     handler_name: str,
     action: str,
 ) -> None:
-    from guardbot.bot import runtime
+    from guardbot.bot import pending_challenges
     from guardbot.bot.handlers import features
     from guardbot.bot.states import BotPasswordFlow
 
     async def scenario() -> None:
         state = _state()
+        client = _ChallengeClient()
+        await _publish_challenge(USER_ID, state, client)
         await state.update_data(stale=True)
-        runtime.user_states[USER_ID] = {"state": "waiting_unique_proxy"}
         callback = Callback(state)
 
         try:
             await getattr(features, handler_name)(callback, state)
-            assert USER_ID not in runtime.user_states
+            assert client.close_calls == 1
+            assert pending_challenges.current_pending_challenge_token(USER_ID) is None
             assert await state.get_state() == BotPasswordFlow.waiting_password.state
             assert await state.get_data() == {"action": action}
             assert callback.message.snapshots == [
                 (BotPasswordFlow.waiting_password.state, {"action": action})
             ]
         finally:
-            runtime.user_states.pop(USER_ID, None)
+            await pending_challenges.clear_pending_challenges_for_user(USER_ID, state)
 
     asyncio.run(scenario())
 

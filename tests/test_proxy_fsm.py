@@ -18,6 +18,29 @@ def _state() -> FSMContext:
     )
 
 
+class _ChallengeClient:
+    def __init__(self) -> None:
+        self.close_calls = 0
+
+    async def close(self) -> None:
+        self.close_calls += 1
+
+
+async def _publish_challenge(user_id: int, state, client) -> str:
+    from guardbot.bot import pending_challenges
+    from guardbot.bot.states import SteamChallengeFlow
+
+    return await pending_challenges.publish_pending_challenge(
+        user_id=user_id,
+        mafile_id=42,
+        kind="email",
+        client=client,
+        state=state,
+        fsm_state=SteamChallengeFlow.waiting_code,
+        ttl_seconds=60,
+    )
+
+
 class Session:
     def __init__(self) -> None:
         self.committed = False
@@ -69,7 +92,7 @@ def test_proxy_callbacks_start_typed_flow_before_prompt(
     monkeypatch,
     handler_name: str,
 ) -> None:
-    from guardbot.bot import runtime
+    from guardbot.bot import pending_challenges, runtime
     from guardbot.bot.handlers import accounts
     from guardbot.bot.states import ProxyFlow
 
@@ -91,14 +114,16 @@ def test_proxy_callbacks_start_typed_flow_before_prompt(
 
     async def scenario() -> None:
         state = _state()
+        client = _ChallengeClient()
+        await _publish_challenge(USER_ID, state, client)
         await state.update_data(stale=True)
-        runtime.user_states[USER_ID] = {"state": "waiting_steam_code"}
         callback = Callback(state, f"{handler_name.removeprefix('callback_')}_42")
 
         try:
             await getattr(accounts, handler_name)(callback, state)
 
-            assert USER_ID not in runtime.user_states
+            assert client.close_calls == 1
+            assert pending_challenges.current_pending_challenge_token(USER_ID) is None
             assert await state.get_state() == ProxyFlow.waiting_proxy.state
             assert await state.get_data() == {"mafile_id": 42}
             assert callback.message.snapshots == [

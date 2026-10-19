@@ -19,6 +19,35 @@ class FakeState:
     async def set_data(self, data: dict) -> None:
         self.data = dict(data)
 
+    async def get_state(self):
+        return self.state
+
+    async def get_data(self) -> dict:
+        return dict(self.data)
+
+
+class _ChallengeClient:
+    def __init__(self) -> None:
+        self.close_calls = 0
+
+    async def close(self) -> None:
+        self.close_calls += 1
+
+
+async def _publish_challenge(user_id: int, state, client) -> str:
+    from guardbot.bot import pending_challenges
+    from guardbot.bot.states import SteamChallengeFlow
+
+    return await pending_challenges.publish_pending_challenge(
+        user_id=user_id,
+        mafile_id=42,
+        kind="email",
+        client=client,
+        state=state,
+        fsm_state=SteamChallengeFlow.waiting_code,
+        ttl_seconds=60,
+    )
+
 
 class PromptMessage:
     def __init__(self, state: FakeState, user_id: int) -> None:
@@ -44,14 +73,14 @@ def test_bulk_import_flow_has_typed_credentials_state() -> None:
 
 
 def test_bulk_import_command_starts_typed_flow_without_proxy(monkeypatch) -> None:
-    from guardbot.bot import runtime
+    from guardbot.bot import pending_challenges, runtime
     from guardbot.bot.handlers import common
     from guardbot.bot.states import BulkImportFlow
 
     user_id = 801
     state = FakeState()
     message = PromptMessage(state, user_id)
-    runtime.user_states[user_id] = {"state": "waiting_steam_code"}
+    client = _ChallengeClient()
 
     async def proxy_lookup_must_not_run(*_args, **_kwargs):
         raise AssertionError("local credential collection must not require a proxy")
@@ -59,23 +88,25 @@ def test_bulk_import_command_starts_typed_flow_without_proxy(monkeypatch) -> Non
     monkeypatch.setattr(runtime, "check_proxy_available", proxy_lookup_must_not_run)
 
     async def scenario() -> None:
+        await _publish_challenge(user_id, state, client)
         try:
             await common.cmd_bulk_import(message, state=state)
 
-            assert user_id not in runtime.user_states
+            assert client.close_calls == 1
+            assert pending_challenges.current_pending_challenge_token(user_id) is None
             assert state.state == BulkImportFlow.waiting_credentials.state
             assert state.data == {}
             assert message.snapshots == [
                 (BulkImportFlow.waiting_credentials.state, {})
             ]
         finally:
-            await runtime.clear_legacy_user_state(user_id)
+            await pending_challenges.clear_pending_challenges_for_user(user_id, state)
 
     asyncio.run(scenario())
 
 
 def test_bulk_import_callback_starts_typed_flow_before_prompt(monkeypatch) -> None:
-    from guardbot.bot import runtime
+    from guardbot.bot import pending_challenges
     from guardbot.bot.handlers import common
     from guardbot.bot.states import BulkImportFlow
 
@@ -83,7 +114,7 @@ def test_bulk_import_callback_starts_typed_flow_before_prompt(monkeypatch) -> No
     state = FakeState()
     message = PromptMessage(state, user_id)
     callback = SimpleNamespace(from_user=SimpleNamespace(id=user_id), message=message)
-    runtime.user_states[user_id] = {"state": "waiting_steam_code"}
+    client = _ChallengeClient()
 
     async def feedback(*_args, **_kwargs) -> None:
         return None
@@ -91,17 +122,19 @@ def test_bulk_import_callback_starts_typed_flow_before_prompt(monkeypatch) -> No
     monkeypatch.setattr(common, "callback_feedback", feedback)
 
     async def scenario() -> None:
+        await _publish_challenge(user_id, state, client)
         try:
             await common.callback_bulk_import_menu(callback, state)
 
-            assert user_id not in runtime.user_states
+            assert client.close_calls == 1
+            assert pending_challenges.current_pending_challenge_token(user_id) is None
             assert state.state == BulkImportFlow.waiting_credentials.state
             assert state.data == {}
             assert message.snapshots == [
                 (BulkImportFlow.waiting_credentials.state, {})
             ]
         finally:
-            await runtime.clear_legacy_user_state(user_id)
+            await pending_challenges.clear_pending_challenges_for_user(user_id, state)
 
     asyncio.run(scenario())
 
@@ -475,19 +508,20 @@ def test_dispatcher_rejects_group_bulk_credentials_before_database(
     asyncio.run(scenario())
 
 
-def test_bulk_command_prompt_failure_rolls_back_both_stores() -> None:
-    from guardbot.bot import runtime
+def test_bulk_command_prompt_failure_rolls_back_and_closes_challenge() -> None:
+    from guardbot.bot import pending_challenges
     from guardbot.bot.handlers import common
 
     user_id = 808
     state = FakeState()
-    runtime.user_states[user_id] = {"state": "waiting_steam_code"}
+    client = _ChallengeClient()
 
     class Message(PromptMessage):
         async def answer(self, *_args, **_kwargs) -> None:
             raise RuntimeError("prompt failed")
 
     async def scenario() -> None:
+        await _publish_challenge(user_id, state, client)
         try:
             try:
                 await common.cmd_bulk_import(Message(state, user_id), state)
@@ -498,20 +532,23 @@ def test_bulk_command_prompt_failure_rolls_back_both_stores() -> None:
 
             assert state.state is None
             assert state.data == {}
-            assert user_id not in runtime.user_states
+            assert client.close_calls == 1
+            assert pending_challenges.current_pending_challenge_token(user_id) is None
         finally:
-            await runtime.clear_legacy_user_state(user_id)
+            await pending_challenges.clear_pending_challenges_for_user(user_id, state)
 
     asyncio.run(scenario())
 
 
-def test_bulk_callback_prompt_failure_rolls_back_both_stores(monkeypatch) -> None:
-    from guardbot.bot import runtime
+def test_bulk_callback_prompt_failure_rolls_back_and_closes_challenge(
+    monkeypatch,
+) -> None:
+    from guardbot.bot import pending_challenges
     from guardbot.bot.handlers import common
 
     user_id = 809
     state = FakeState()
-    runtime.user_states[user_id] = {"state": "waiting_steam_code"}
+    client = _ChallengeClient()
 
     class Message(PromptMessage):
         async def edit_text(self, *_args, **_kwargs) -> None:
@@ -525,6 +562,7 @@ def test_bulk_callback_prompt_failure_rolls_back_both_stores(monkeypatch) -> Non
     callback = SimpleNamespace(from_user=SimpleNamespace(id=user_id), message=message)
 
     async def scenario() -> None:
+        await _publish_challenge(user_id, state, client)
         try:
             try:
                 await common.callback_bulk_import_menu(callback, state)
@@ -535,9 +573,10 @@ def test_bulk_callback_prompt_failure_rolls_back_both_stores(monkeypatch) -> Non
 
             assert state.state is None
             assert state.data == {}
-            assert user_id not in runtime.user_states
+            assert client.close_calls == 1
+            assert pending_challenges.current_pending_challenge_token(user_id) is None
         finally:
-            await runtime.clear_legacy_user_state(user_id)
+            await pending_challenges.clear_pending_challenges_for_user(user_id, state)
 
     asyncio.run(scenario())
 

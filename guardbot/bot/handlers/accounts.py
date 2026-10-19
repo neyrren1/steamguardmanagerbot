@@ -28,14 +28,12 @@ from guardbot.bot.pending_challenges import (
 from guardbot.bot.runtime import (
     callback_feedback,
     check_proxy_available,
-    clear_legacy_user_state,
     clear_user_workflows,
     close_owned_resource,
     delete_secret_message_or_abort,
     bot,
     dp,
     require_proxy,
-    user_states,
 )
 from guardbot.bot.states import (
     AccountAddFlow,
@@ -2521,8 +2519,8 @@ async def callback_confirm_delete(callback: CallbackQuery):
             await callback.message.edit_text("❌ Аккаунт не найден")
 
 async def _start_account_add(state: FSMContext, user_id: int) -> None:
-    """Start the typed flow without leaving a competing legacy state."""
-    await clear_legacy_user_state(user_id)
+    """Start the typed flow after closing any competing workflow."""
+    await clear_user_workflows(user_id, state)
     await state.set_state(AccountAddFlow.waiting_credentials)
 
 
@@ -2568,10 +2566,7 @@ async def callback_cancel_state_to_accounts(
 ):
     """Отмена добавления аккаунта и возврат к списку"""
     user_id = callback.from_user.id
-    if user_id in user_states:
-        await clear_legacy_user_state(user_id)
-        logger.info(f"Cleared legacy state for user {user_id}")
-    await state.clear()
+    await clear_user_workflows(user_id, state)
 
     await callback_feedback(callback, "❌ Добавление отменено")
     await show_accounts_page(callback, page=0)
@@ -3173,12 +3168,13 @@ async def cmd_cancel(message: Message, state: FSMContext):
     )
     if isinstance(middleware_snapshot, dict):
         current_state = middleware_snapshot.get("typed_state")
-        legacy_state = middleware_snapshot.get("legacy_state")
         had_workflow = bool(middleware_snapshot.get("had_workflow"))
     else:
         current_state = await state.get_state()
-        legacy_state = user_states.get(user_id, {}).get("state")
-        had_workflow = bool(current_state or legacy_state)
+        had_workflow = bool(
+            current_state
+            or current_pending_challenge_token(user_id) is not None
+        )
 
     await clear_user_workflows(user_id, state)
 

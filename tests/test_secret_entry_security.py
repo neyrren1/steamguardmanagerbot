@@ -239,6 +239,7 @@ def test_manual_code_login_double_failure_still_closes_client(monkeypatch) -> No
     from aiogram.exceptions import TelegramBadRequest
     from aiogram.methods import EditMessageText
 
+    from guardbot.bot import pending_challenges
     from guardbot.bot.handlers import accounts
 
     class SessionContext:
@@ -305,7 +306,7 @@ def test_manual_code_login_double_failure_still_closes_client(monkeypatch) -> No
             pass
         assert callback.answer_calls == 1
         assert client.close_calls == 1
-        assert 987 not in accounts.user_states
+        assert pending_challenges.current_pending_challenge_token(987) is None
 
     asyncio.run(scenario())
 
@@ -563,7 +564,6 @@ def test_login_completion_edit_failure_closes_untransferred_client(monkeypatch) 
 
 
 def test_non_telegram_challenge_prompt_failure_rolls_back_client_state(monkeypatch) -> None:
-    from guardbot.bot import runtime
     from guardbot.bot.handlers import accounts
 
     class Client:
@@ -631,7 +631,6 @@ def test_non_telegram_challenge_prompt_failure_rolls_back_client_state(monkeypat
             telegram_id=988,
             state=state,
         )
-        assert 988 not in runtime.user_states
         assert pending_challenges.current_pending_challenge_token(988) is None
         assert await state.get_state() is None
         assert client.close_calls == 1
@@ -899,7 +898,6 @@ def test_manual_code_cancellation_preserves_newer_replacement_state(monkeypatch)
 
 
 def test_successful_single_mafile_import_clears_terminal_state(monkeypatch) -> None:
-    from guardbot.bot import runtime
     from guardbot.bot.handlers import imports
 
     class Result:
@@ -970,7 +968,6 @@ def test_successful_single_mafile_import_clears_terminal_state(monkeypatch) -> N
     async def scenario() -> None:
         state = State()
         await imports.receive_new_mafile(Message(), state)
-        assert 991 not in runtime.user_states
         assert state.raw_state is None
         confirmation = status_edits[-1][0]
         assert 'x&lt;/b&gt;&lt;a href=&quot;https://example.invalid/&quot;&gt;' in confirmation

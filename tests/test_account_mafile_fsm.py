@@ -20,6 +20,29 @@ def _state() -> FSMContext:
     )
 
 
+class _ChallengeClient:
+    def __init__(self) -> None:
+        self.close_calls = 0
+
+    async def close(self) -> None:
+        self.close_calls += 1
+
+
+async def _publish_challenge(user_id: int, state, client) -> str:
+    from guardbot.bot import pending_challenges
+    from guardbot.bot.states import SteamChallengeFlow
+
+    return await pending_challenges.publish_pending_challenge(
+        user_id=user_id,
+        mafile_id=42,
+        kind="email",
+        client=client,
+        state=state,
+        fsm_state=SteamChallengeFlow.waiting_code,
+        ttl_seconds=60,
+    )
+
+
 class Session:
     async def __aenter__(self):
         return self
@@ -58,7 +81,7 @@ class Callback:
 
 
 def test_account_mafile_callback_starts_typed_flow_before_prompt(monkeypatch) -> None:
-    from guardbot.bot import runtime
+    from guardbot.bot import pending_challenges, runtime
     from guardbot.bot.handlers import accounts
     from guardbot.bot.states import AccountMaFileImportFlow
 
@@ -76,14 +99,16 @@ def test_account_mafile_callback_starts_typed_flow_before_prompt(monkeypatch) ->
 
     async def scenario() -> None:
         state = _state()
+        client = _ChallengeClient()
+        await _publish_challenge(USER_ID, state, client)
         await state.update_data(stale=True)
-        runtime.user_states[USER_ID] = {"state": "waiting_steam_code"}
         callback = Callback(state, "import_mafile_for_42")
 
         try:
             await accounts.callback_import_mafile_for(callback, state)
 
-            assert USER_ID not in runtime.user_states
+            assert client.close_calls == 1
+            assert pending_challenges.current_pending_challenge_token(USER_ID) is None
             assert await state.get_state() == AccountMaFileImportFlow.waiting_document.state
             assert await state.get_data() == {"mafile_id": 42}
             assert callback.message.snapshots == [

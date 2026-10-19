@@ -18,6 +18,29 @@ def _state() -> FSMContext:
     )
 
 
+class _ChallengeClient:
+    def __init__(self) -> None:
+        self.close_calls = 0
+
+    async def close(self) -> None:
+        self.close_calls += 1
+
+
+async def _publish_challenge(user_id: int, state, client) -> str:
+    from guardbot.bot import pending_challenges
+    from guardbot.bot.states import SteamChallengeFlow
+
+    return await pending_challenges.publish_pending_challenge(
+        user_id=user_id,
+        mafile_id=42,
+        kind="email",
+        client=client,
+        state=state,
+        fsm_state=SteamChallengeFlow.waiting_code,
+        ttl_seconds=60,
+    )
+
+
 class _Session:
     def __init__(self) -> None:
         self.commits = 0
@@ -81,7 +104,7 @@ class _InputMessage:
 
 
 def test_toggle_callback_starts_typed_interval_flow_before_prompt(monkeypatch) -> None:
-    from guardbot.bot import runtime
+    from guardbot.bot import pending_challenges
     from guardbot.bot.handlers import features
     from guardbot.bot.states import TradeNotificationFlow
 
@@ -103,17 +126,16 @@ def test_toggle_callback_starts_typed_interval_flow_before_prompt(monkeypatch) -
 
     async def scenario() -> None:
         state = _state()
+        client = _ChallengeClient()
+        await _publish_challenge(USER_ID, state, client)
         await state.update_data(stale=True)
-        runtime.user_states[USER_ID] = {
-            "state": "waiting_custom_price",
-            "mafile_id": 9,
-        }
         callback = _Callback(state)
 
         try:
             await features.callback_trade_notify_toggle(callback, state)
 
-            assert USER_ID not in runtime.user_states
+            assert client.close_calls == 1
+            assert pending_challenges.current_pending_challenge_token(USER_ID) is None
             assert await state.get_state() == TradeNotificationFlow.waiting_interval.state
             assert await state.get_data() == {
                 "mafile_id": 42,
@@ -126,7 +148,7 @@ def test_toggle_callback_starts_typed_interval_flow_before_prompt(monkeypatch) -
             assert "&lt;b&gt;account&lt;/b&gt;" in prompt
             assert "<b>account</b>" not in prompt
         finally:
-            runtime.user_states.pop(USER_ID, None)
+            await pending_challenges.clear_pending_challenges_for_user(USER_ID, state)
 
     asyncio.run(scenario())
 

@@ -11,11 +11,9 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from guardbot.bot.main_menu import build_main_menu_view, edit_main_menu, send_main_menu
 from guardbot.bot.runtime import (
     callback_feedback,
-    clear_legacy_user_state,
     clear_user_workflows,
     dp,
     stop_trade_check_task,
-    user_states,
 )
 from guardbot.bot.states import BulkImportFlow
 from guardbot.config import logger

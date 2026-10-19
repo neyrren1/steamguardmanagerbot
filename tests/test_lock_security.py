@@ -17,6 +17,29 @@ def _state(user_id: int = 987) -> FSMContext:
     )
 
 
+class _ChallengeClient:
+    def __init__(self) -> None:
+        self.close_calls = 0
+
+    async def close(self) -> None:
+        self.close_calls += 1
+
+
+async def _publish_challenge(user_id: int, state, client) -> str:
+    from guardbot.bot import pending_challenges
+    from guardbot.bot.states import SteamChallengeFlow
+
+    return await pending_challenges.publish_pending_challenge(
+        user_id=user_id,
+        mafile_id=42,
+        kind="email",
+        client=client,
+        state=state,
+        fsm_state=SteamChallengeFlow.waiting_code,
+        ttl_seconds=60,
+    )
+
+
 def test_failed_automatic_lock_preserves_workflow_state(monkeypatch) -> None:
     from guardbot.bot import runtime
     from guardbot.bot.states import AccountAddFlow
@@ -55,7 +78,6 @@ def test_failed_automatic_lock_preserves_workflow_state(monkeypatch) -> None:
     async def scenario() -> None:
         state = _state()
         await state.set_state(AccountAddFlow.waiting_credentials)
-        runtime.user_states[987] = {"state": "waiting_note"}
         event = SimpleNamespace(
             message=Message(),
             callback_query=None,
@@ -68,10 +90,76 @@ def test_failed_automatic_lock_preserves_workflow_state(monkeypatch) -> None:
                 await runtime.LockCheckMiddleware()(lambda *_: None, event, data)
 
             assert await state.get_state() == AccountAddFlow.waiting_credentials.state
-            assert runtime.user_states[987] == {"state": "waiting_note"}
         finally:
-            runtime.user_states.pop(987, None)
             await state.clear()
+
+    asyncio.run(scenario())
+
+
+def test_failed_automatic_lock_preserves_pending_challenge(monkeypatch) -> None:
+    from guardbot.bot import pending_challenges, runtime
+    from guardbot.bot.states import SteamChallengeFlow
+
+    user = SimpleNamespace(
+        bot_password="stored-hash",
+        last_activity=datetime.now(UTC).replace(tzinfo=None) - timedelta(minutes=10),
+        lock_timeout=1,
+    )
+
+    class Result:
+        @staticmethod
+        def scalar_one_or_none():
+            return user
+
+    class Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+        async def execute(self, statement):
+            return Result()
+
+        async def commit(self) -> None:
+            raise RuntimeError("database unavailable")
+
+    class Message:
+        from_user = SimpleNamespace(id=987)
+        chat = SimpleNamespace(type="private")
+        text = "12345"
+
+        def __init__(self) -> None:
+            self.deleted = False
+
+        async def delete(self) -> None:
+            self.deleted = True
+
+    monkeypatch.setattr(runtime, "AsyncSessionLocal", lambda: Session())
+
+    async def scenario() -> None:
+        state = _state()
+        client = _ChallengeClient()
+        token = await _publish_challenge(987, state, client)
+        message = Message()
+        event = SimpleNamespace(
+            message=message,
+            callback_query=None,
+            inline_query=None,
+        )
+        data = {"state": state, "raw_state": await state.get_state()}
+
+        try:
+            with pytest.raises(RuntimeError, match="database unavailable"):
+                await runtime.LockCheckMiddleware()(lambda *_: None, event, data)
+
+            assert message.deleted is True
+            assert client.close_calls == 0
+            assert pending_challenges.current_pending_challenge_token(987) == token
+            assert await state.get_state() == SteamChallengeFlow.waiting_code.state
+            assert (await state.get_data())["challenge_id"] == token
+        finally:
+            await pending_challenges.clear_pending_challenges_for_user(987, state)
 
     asyncio.run(scenario())
 
@@ -334,17 +422,14 @@ def test_group_unlock_text_is_deleted_before_lock_short_circuit(monkeypatch) -> 
 
 
 @pytest.mark.parametrize(
-    "legacy_state",
-    [
-        "waiting_steam_code",
-        "waiting_steam_code_or_mafile",
-    ],
+    "secret_state",
+    ["SteamChallengeFlow:waiting_code"],
 )
-def test_group_legacy_secret_is_rejected_before_database(
+def test_group_secret_flow_message_is_rejected_before_database(
     monkeypatch,
-    legacy_state,
+    secret_state,
 ) -> None:
-    from guardbot.bot import runtime
+    from guardbot.bot import pending_challenges, runtime
 
     class Message:
         from_user = SimpleNamespace(id=987)
@@ -353,12 +438,14 @@ def test_group_legacy_secret_is_rejected_before_database(
 
         def __init__(self) -> None:
             self.deleted = False
+            self.answers = []
 
         async def delete(self) -> None:
             self.deleted = True
 
         async def answer(self, text, **kwargs) -> None:
-            return None
+            assert self.deleted is True
+            self.answers.append(text)
 
     monkeypatch.setattr(
         runtime,
@@ -368,7 +455,12 @@ def test_group_legacy_secret_is_rejected_before_database(
 
     async def scenario() -> None:
         message = Message()
-        runtime.user_states[987] = {"state": legacy_state}
+        state = _state()
+        client = _ChallengeClient()
+        await _publish_challenge(987, state, client)
+        raw_state = await state.get_state()
+        assert raw_state == secret_state
+        assert raw_state in runtime._SECRET_FSM_STATES
         try:
             event = SimpleNamespace(
                 message=message,
@@ -382,11 +474,14 @@ def test_group_legacy_secret_is_rejected_before_database(
             await runtime.LockCheckMiddleware()(
                 forbidden_handler,
                 event,
-                {"raw_state": None, "state": _state()},
+                {"raw_state": raw_state, "state": state},
             )
             assert message.deleted is True
+            assert len(message.answers) == 1
+            assert "личном чате" in message.answers[0]
+            assert client.close_calls == 0
         finally:
-            runtime.user_states.pop(987, None)
+            await pending_challenges.clear_pending_challenges_for_user(987, state)
 
     asyncio.run(scenario())
 
@@ -424,7 +519,7 @@ def test_secret_callbacks_reject_non_private_chats() -> None:
             await handler(callback, state)
             assert callback.answers == [(None, {})]
             assert "личном чате" in callback.message.feedback[0]
-            assert 987 not in features.user_states
+            assert await state.get_state() is None
 
         callback = Callback()
         await features.callback_unlock_bot(callback, state)
@@ -435,7 +530,7 @@ def test_secret_callbacks_reject_non_private_chats() -> None:
     asyncio.run(scenario())
 
 
-def test_prompt_failures_clear_typed_and_legacy_state() -> None:
+def test_prompt_failures_clear_typed_state() -> None:
     from guardbot.bot.handlers import commands, features
 
     class CommandMessage:
@@ -483,16 +578,16 @@ def test_prompt_failures_clear_typed_and_legacy_state() -> None:
                 SimpleNamespace(args=None),
                 state,
             )
-        assert 987 not in commands.user_states
+        assert await state.get_state() is None
 
         with pytest.raises(TelegramBadRequest):
             await features.callback_set_password(Callback(), state)
-        assert 987 not in features.user_states
+        assert await state.get_state() is None
 
     asyncio.run(scenario())
 
 
-def test_password_cancel_clears_both_state_stores(monkeypatch) -> None:
+def test_password_cancel_clears_typed_state(monkeypatch) -> None:
     from guardbot.bot.handlers import accounts, features
     from guardbot.bot.states import AccountAddFlow
 
@@ -516,22 +611,18 @@ def test_password_cancel_clears_both_state_stores(monkeypatch) -> None:
     async def scenario() -> None:
         state = _state()
         await state.set_state(AccountAddFlow.waiting_credentials)
-        features.user_states[987] = {
-            "state": "waiting_bot_password",
-            "action": "set",
-        }
 
         await features.callback_cancel_password_to_settings(callback, state)
 
         assert called is True
-        assert 987 not in features.user_states
         assert await state.get_state() is None
+        assert await state.get_data() == {}
 
     asyncio.run(scenario())
 
 
 def test_secret_message_is_deleted_before_automatic_lock(monkeypatch) -> None:
-    from guardbot.bot import runtime
+    from guardbot.bot import pending_challenges, runtime
 
     user = SimpleNamespace(
         bot_password="stored-hash",
@@ -544,6 +635,8 @@ def test_secret_message_is_deleted_before_automatic_lock(monkeypatch) -> None:
         def scalar_one_or_none():
             return user
 
+    commits = []
+
     class Session:
         async def __aenter__(self):
             return self
@@ -552,10 +645,12 @@ def test_secret_message_is_deleted_before_automatic_lock(monkeypatch) -> None:
             return False
 
         async def execute(self, statement):
+            assert message.deleted is True
             return Result()
 
         async def commit(self) -> None:
-            return None
+            assert client.close_calls == 0
+            commits.append(user.last_activity)
 
     class Message:
         from_user = SimpleNamespace(id=987)
@@ -572,10 +667,12 @@ def test_secret_message_is_deleted_before_automatic_lock(monkeypatch) -> None:
             return None
 
     monkeypatch.setattr(runtime, "AsyncSessionLocal", lambda: Session())
+    message = Message()
+    client = _ChallengeClient()
 
     async def scenario() -> None:
-        runtime.user_states[987] = {"state": "waiting_steam_code"}
-        message = Message()
+        state = _state()
+        await _publish_challenge(987, state, client)
         event = SimpleNamespace(
             message=message,
             callback_query=None,
@@ -588,12 +685,16 @@ def test_secret_message_is_deleted_before_automatic_lock(monkeypatch) -> None:
             await runtime.LockCheckMiddleware()(
                 forbidden_handler,
                 event,
-                {"raw_state": None, "state": _state()},
+                {"raw_state": await state.get_state(), "state": state},
             )
             assert message.deleted is True
-            assert 987 not in runtime.user_states
+            assert commits == [None]
+            assert client.close_calls == 1
+            assert pending_challenges.current_pending_challenge_token(987) is None
+            assert await state.get_state() is None
+            assert await state.get_data() == {}
         finally:
-            runtime.user_states.pop(987, None)
+            await pending_challenges.clear_pending_challenges_for_user(987, state)
 
     asyncio.run(scenario())
 
@@ -647,8 +748,8 @@ def test_non_private_secret_document_is_deleted_before_database(
     asyncio.run(scenario())
 
 
-def test_navigation_callback_clears_legacy_secret_state(monkeypatch) -> None:
-    from guardbot.bot import runtime
+def test_navigation_callback_clears_pending_challenge_before_routing(monkeypatch) -> None:
+    from guardbot.bot import pending_challenges, runtime
 
     user = SimpleNamespace(bot_password=None, last_activity=None, lock_timeout=None)
 
@@ -678,10 +779,9 @@ def test_navigation_callback_clears_legacy_secret_state(monkeypatch) -> None:
     monkeypatch.setattr(runtime, "AsyncSessionLocal", lambda: Session())
 
     async def scenario() -> None:
-        runtime.user_states[987] = {
-            "state": "waiting_steam_code",
-            "client": object(),
-        }
+        state = _state()
+        client = _ChallengeClient()
+        await _publish_challenge(987, state, client)
         event = SimpleNamespace(
             message=None,
             callback_query=Callback(),
@@ -689,24 +789,29 @@ def test_navigation_callback_clears_legacy_secret_state(monkeypatch) -> None:
         )
 
         async def handler(event, data):
-            assert 987 not in runtime.user_states
+            assert client.close_calls == 1
+            assert pending_challenges.current_pending_challenge_token(987) is None
+            assert await state.get_state() is None
+            assert await state.get_data() == {}
+            assert data["raw_state"] is None
             return "handled"
 
         try:
             result = await runtime.LockCheckMiddleware()(
                 handler,
                 event,
-                {"raw_state": None, "state": _state()},
+                {"raw_state": await state.get_state(), "state": state},
             )
             assert result == "handled"
+            assert client.close_calls == 1
         finally:
-            runtime.user_states.pop(987, None)
+            await pending_challenges.clear_pending_challenges_for_user(987, state)
 
     asyncio.run(scenario())
 
 
 def test_prompt_error_middleware_clears_secret_state() -> None:
-    from guardbot.bot import runtime
+    from guardbot.bot import pending_challenges, runtime
 
     event = SimpleNamespace(
         message=SimpleNamespace(from_user=SimpleNamespace(id=987)),
@@ -715,11 +820,11 @@ def test_prompt_error_middleware_clears_secret_state() -> None:
     )
 
     async def scenario() -> None:
+        state = _state()
+        client = _ChallengeClient()
+
         async def handler(event, data):
-            await runtime.set_legacy_user_state(
-                987,
-                {"state": "waiting_steam_code"},
-            )
+            await _publish_challenge(987, data["state"], client)
             raise TelegramBadRequest(
                 method=SendMessage(chat_id=987, text="prompt"),
                 message="send failed",
@@ -730,17 +835,20 @@ def test_prompt_error_middleware_clears_secret_state() -> None:
                 await runtime.SecretStateCleanupMiddleware()(
                     handler,
                     event,
-                    {"state": _state()},
+                    {"state": state},
                 )
-            assert 987 not in runtime.user_states
+            assert client.close_calls == 1
+            assert pending_challenges.current_pending_challenge_token(987) is None
+            assert await state.get_state() is None
+            assert await state.get_data() == {}
         finally:
-            runtime.user_states.pop(987, None)
+            await pending_challenges.clear_pending_challenges_for_user(987, state)
 
     asyncio.run(scenario())
 
 
 def test_secret_delete_failure_aborts_before_database_and_dispatch(monkeypatch) -> None:
-    from guardbot.bot import runtime
+    from guardbot.bot import pending_challenges, runtime
 
     class Message:
         from_user = SimpleNamespace(id=987)
@@ -766,7 +874,9 @@ def test_secret_delete_failure_aborts_before_database_and_dispatch(monkeypatch) 
     )
 
     async def scenario() -> None:
-        runtime.user_states[987] = {"state": "waiting_steam_code"}
+        state = _state()
+        client = _ChallengeClient()
+        await _publish_challenge(987, state, client)
         message = Message()
         event = SimpleNamespace(
             message=message,
@@ -783,26 +893,19 @@ def test_secret_delete_failure_aborts_before_database_and_dispatch(monkeypatch) 
             await runtime.LockCheckMiddleware()(
                 handler,
                 event,
-                {"raw_state": None, "state": _state()},
+                {"raw_state": await state.get_state(), "state": state},
             )
             assert called is False
             assert "не удалось удалить" in message.answers[0].lower()
         finally:
-            runtime.user_states.pop(987, None)
+            await pending_challenges.clear_pending_challenges_for_user(987, state)
 
     asyncio.run(scenario())
 
 
-def test_cancel_closes_legacy_state_resources() -> None:
+def test_cancel_closes_pending_challenge_client() -> None:
+    from guardbot.bot import pending_challenges
     from guardbot.bot.handlers import accounts
-    from guardbot.bot.states import BotPasswordFlow
-
-    class Resource:
-        def __init__(self) -> None:
-            self.closed = False
-
-        async def close(self) -> None:
-            self.closed = True
 
     class Message:
         from_user = SimpleNamespace(id=987)
@@ -812,50 +915,17 @@ def test_cancel_closes_legacy_state_resources() -> None:
 
     async def scenario() -> None:
         state = _state()
-        await state.set_state(BotPasswordFlow.waiting_password)
-        await state.set_data({"action": "set"})
-        client = Resource()
-        db_session = Resource()
-        accounts.user_states[987] = {
-            "state": "waiting_steam_code",
-            "client": client,
-            "db_session": db_session,
-        }
-        await accounts.cmd_cancel(Message(), state)
-        assert await state.get_state() is None
-        assert await state.get_data() == {}
-        assert 987 not in accounts.user_states
-        assert client.closed is True
-        assert db_session.closed is True
-
-    asyncio.run(scenario())
-
-
-def test_legacy_secret_state_timeout_closes_live_client() -> None:
-    from guardbot.bot import runtime
-
-    class Client:
-        def __init__(self) -> None:
-            self.closed = False
-
-        async def close(self) -> None:
-            self.closed = True
-
-    async def scenario() -> None:
-        client = Client()
-        runtime.user_states[987] = {
-            "state": "waiting_steam_code_or_mafile",
-            "client": client,
-        }
-        await runtime.set_legacy_user_state(
-            987,
-            {"state": "waiting_email_code", "client": client},
-            ttl_seconds=0.01,
-        )
-        assert client.closed is False
-        await asyncio.sleep(0.03)
-        assert 987 not in runtime.user_states
-        assert client.closed is True
+        client = _ChallengeClient()
+        await _publish_challenge(987, state, client)
+        try:
+            await accounts.cmd_cancel(Message(), state)
+            assert await state.get_state() is None
+            assert await state.get_data() == {}
+            assert client.close_calls == 1
+            assert pending_challenges.current_pending_challenge_token(987) is None
+        finally:
+            await pending_challenges.clear_pending_challenges_for_user(987, state)
+        assert client.close_calls == 1
 
     asyncio.run(scenario())
 
@@ -891,10 +961,12 @@ def test_password_prompt_callback_is_acknowledged_before_edit_failure() -> None:
     asyncio.run(scenario())
 
 
-def test_cancel_command_clears_both_stores_before_lock_database_failure(
+@pytest.mark.parametrize("workflow", ["bot_password", "steam_challenge"])
+def test_cancel_command_clears_workflow_before_lock_database_failure(
     monkeypatch,
+    workflow: str,
 ) -> None:
-    from guardbot.bot import runtime
+    from guardbot.bot import pending_challenges, runtime
     from guardbot.bot.states import BotPasswordFlow
 
     class Filter:
@@ -939,9 +1011,13 @@ def test_cancel_command_clears_both_stores_before_lock_database_failure(
 
     async def scenario() -> None:
         state = _state(993)
-        await state.set_state(BotPasswordFlow.waiting_password)
-        await state.set_data({"action": "set"})
-        runtime.user_states[993] = {"state": "waiting_steam_code"}
+        client = _ChallengeClient()
+        if workflow == "bot_password":
+            await state.set_state(BotPasswordFlow.waiting_password)
+            await state.set_data({"action": "set"})
+        else:
+            await _publish_challenge(993, state, client)
+        raw_state = await state.get_state()
 
         async def handler(event, data):
             raise AssertionError("lock database failure must precede dispatch")
@@ -958,25 +1034,29 @@ def test_cancel_command_clears_both_stores_before_lock_database_failure(
                     event,
                     {
                         "bot": object(),
-                        "raw_state": BotPasswordFlow.waiting_password.state,
+                        "raw_state": raw_state,
                         "state": state,
                     },
                 )
 
-            assert 993 not in runtime.user_states
             assert await state.get_state() is None
             assert await state.get_data() == {}
+            assert pending_challenges.current_pending_challenge_token(993) is None
+            assert client.close_calls == int(workflow == "steam_challenge")
         finally:
-            await runtime.clear_legacy_user_state(993)
-            await state.clear()
+            await pending_challenges.clear_pending_challenges_for_user(993, state)
 
     asyncio.run(scenario())
 
 
-def test_cancel_command_mentions_only_affect_the_current_bot(monkeypatch) -> None:
+@pytest.mark.parametrize("workflow", ["bot_password", "steam_challenge"])
+def test_cancel_command_mentions_only_affect_the_current_bot(
+    monkeypatch,
+    workflow: str,
+) -> None:
     from aiogram.types import Chat, Message, User
 
-    from guardbot.bot import runtime
+    from guardbot.bot import pending_challenges, runtime
     from guardbot.bot.states import BotPasswordFlow
 
     class FakeBot:
@@ -1003,24 +1083,20 @@ def test_cancel_command_mentions_only_affect_the_current_bot(monkeypatch) -> Non
         async def execute(self, _statement):
             return Result()
 
-    class Resource:
-        def __init__(self) -> None:
-            self.closed = False
-
-        async def close(self) -> None:
-            self.closed = True
+    async def arm_workflow(state, client) -> tuple[str, dict]:
+        if workflow == "bot_password":
+            await state.set_state(BotPasswordFlow.waiting_password)
+            await state.set_data({"action": "set"})
+        else:
+            await _publish_challenge(state.key.user_id, state, client)
+        return await state.get_state(), await state.get_data()
 
     monkeypatch.setattr(runtime, "AsyncSessionLocal", Session)
 
     async def run_case(text: str, *, should_cancel: bool) -> None:
         state = _state(995)
-        await state.set_state(BotPasswordFlow.waiting_password)
-        await state.set_data({"action": "set"})
-        resource = Resource()
-        runtime.user_states[995] = {
-            "state": "waiting_steam_code",
-            "client": resource,
-        }
+        client = _ChallengeClient()
+        raw_state, workflow_data = await arm_workflow(state, client)
         message = Message(
             message_id=1,
             date=datetime.now(UTC),
@@ -1048,22 +1124,21 @@ def test_cancel_command_mentions_only_affect_the_current_bot(monkeypatch) -> Non
                 ),
                 {
                     "bot": FakeBot(),
-                    "raw_state": BotPasswordFlow.waiting_password.state,
+                    "raw_state": raw_state,
                     "state": state,
                 },
             )
 
             if should_cancel:
-                assert 995 not in runtime.user_states
                 assert await state.get_state() is None
                 assert await state.get_data() == {}
-                assert resource.closed is True
+                assert pending_challenges.current_pending_challenge_token(995) is None
+                assert client.close_calls == int(workflow == "steam_challenge")
                 assert dispatched is True
             else:
-                assert runtime.user_states[995]["state"] == "waiting_steam_code"
-                assert await state.get_state() == BotPasswordFlow.waiting_password.state
-                assert await state.get_data() == {"action": "set"}
-                assert resource.closed is False
+                assert await state.get_state() == raw_state
+                assert await state.get_data() == workflow_data
+                assert client.close_calls == 0
                 assert dispatched is False
         finally:
             await runtime.clear_user_workflows(995, state)
@@ -1076,10 +1151,14 @@ def test_cancel_command_mentions_only_affect_the_current_bot(monkeypatch) -> Non
     asyncio.run(scenario())
 
 
-def test_caption_commands_and_untexted_secret_documents_are_safe(monkeypatch) -> None:
+@pytest.mark.parametrize("workflow", ["bot_password", "steam_challenge"])
+def test_caption_commands_and_untexted_secret_documents_are_safe(
+    monkeypatch,
+    workflow: str,
+) -> None:
     from aiogram.types import Chat, Document, Message, User
 
-    from guardbot.bot import runtime
+    from guardbot.bot import pending_challenges, runtime
     from guardbot.bot.states import BotPasswordFlow
 
     class FakeBot:
@@ -1106,12 +1185,13 @@ def test_caption_commands_and_untexted_secret_documents_are_safe(monkeypatch) ->
         async def execute(self, _statement):
             return Result()
 
-    class Resource:
-        def __init__(self) -> None:
-            self.closed = False
-
-        async def close(self) -> None:
-            self.closed = True
+    async def arm_workflow(state, client) -> tuple[str, dict]:
+        if workflow == "bot_password":
+            await state.set_state(BotPasswordFlow.waiting_password)
+            await state.set_data({"action": "set"})
+        else:
+            await _publish_challenge(state.key.user_id, state, client)
+        return await state.get_state(), await state.get_data()
 
     deleted_messages = []
 
@@ -1151,13 +1231,8 @@ def test_caption_commands_and_untexted_secret_documents_are_safe(monkeypatch) ->
         should_delete: bool,
     ) -> None:
         state = _state(996)
-        await state.set_state(BotPasswordFlow.waiting_password)
-        await state.set_data({"action": "set"})
-        resource = Resource()
-        runtime.user_states[996] = {
-            "state": "waiting_steam_code",
-            "client": resource,
-        }
+        client = _ChallengeClient()
+        raw_state, workflow_data = await arm_workflow(state, client)
         message = make_document_message(caption)
         dispatched = False
         deletions_before = len(deleted_messages)
@@ -1176,23 +1251,22 @@ def test_caption_commands_and_untexted_secret_documents_are_safe(monkeypatch) ->
                 ),
                 {
                     "bot": FakeBot(),
-                    "raw_state": BotPasswordFlow.waiting_password.state,
+                    "raw_state": raw_state,
                     "state": state,
                 },
             )
 
             assert len(deleted_messages) - deletions_before == int(should_delete)
             if should_cancel:
-                assert 996 not in runtime.user_states
                 assert await state.get_state() is None
                 assert await state.get_data() == {}
-                assert resource.closed is True
+                assert pending_challenges.current_pending_challenge_token(996) is None
+                assert client.close_calls == int(workflow == "steam_challenge")
                 assert dispatched is True
             else:
-                assert runtime.user_states[996]["state"] == "waiting_steam_code"
-                assert await state.get_state() == BotPasswordFlow.waiting_password.state
-                assert await state.get_data() == {"action": "set"}
-                assert resource.closed is False
+                assert await state.get_state() == raw_state
+                assert await state.get_data() == workflow_data
+                assert client.close_calls == 0
                 assert dispatched is False
         finally:
             await runtime.clear_user_workflows(996, state)
@@ -1241,7 +1315,7 @@ def test_caption_commands_and_untexted_secret_documents_are_safe(monkeypatch) ->
     asyncio.run(scenario())
 
 
-def test_navigation_clears_typed_state_after_clearing_parallel_legacy_state(
+def test_navigation_callback_clears_typed_state_before_routing(
     monkeypatch,
 ) -> None:
     from guardbot.bot import runtime
@@ -1272,13 +1346,13 @@ def test_navigation_clears_typed_state_after_clearing_parallel_legacy_state(
     async def scenario() -> None:
         state = _state(994)
         await state.set_state(AccountAddFlow.waiting_credentials)
-        runtime.user_states[994] = {"state": "waiting_steam_code"}
         handled = False
 
         async def handler(event, data):
             nonlocal handled
             handled = True
-            assert 994 not in runtime.user_states
+            assert await state.get_state() is None
+            assert data["raw_state"] is None
 
         event = SimpleNamespace(
             message=None,

@@ -3,6 +3,7 @@ import inspect
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
+import pytest
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.base import StorageKey
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -12,6 +13,29 @@ def _state(user_id: int = 987) -> FSMContext:
     return FSMContext(
         storage=MemoryStorage(),
         key=StorageKey(bot_id=42, chat_id=user_id, user_id=user_id),
+    )
+
+
+class _ChallengeClient:
+    def __init__(self) -> None:
+        self.close_calls = 0
+
+    async def close(self) -> None:
+        self.close_calls += 1
+
+
+async def _publish_challenge(user_id: int, state, client) -> str:
+    from guardbot.bot import pending_challenges
+    from guardbot.bot.states import SteamChallengeFlow
+
+    return await pending_challenges.publish_pending_challenge(
+        user_id=user_id,
+        mafile_id=42,
+        kind="email",
+        client=client,
+        state=state,
+        fsm_state=SteamChallengeFlow.waiting_code,
+        ttl_seconds=60,
     )
 
 
@@ -168,9 +192,8 @@ def test_locked_inline_query_is_not_dispatched(monkeypatch) -> None:
     asyncio.run(scenario())
 
 
-def test_automatic_lock_clears_typed_and_legacy_state(monkeypatch) -> None:
-    from guardbot.bot import runtime
-    from guardbot.bot.states import UnlockFlow
+def test_automatic_lock_clears_pending_challenge_after_commit(monkeypatch) -> None:
+    from guardbot.bot import pending_challenges, runtime
 
     user = SimpleNamespace(
         bot_password="stored-hash",
@@ -196,9 +219,12 @@ def test_automatic_lock_clears_typed_and_legacy_state(monkeypatch) -> None:
             return Result()
 
         async def commit(self) -> None:
+            assert client.close_calls == 0
+            assert pending_challenges.current_pending_challenge_token(987) is not None
             self.commits += 1
 
     session = Session()
+    client = _ChallengeClient()
 
     class Message:
         from_user = SimpleNamespace(id=987)
@@ -215,8 +241,7 @@ def test_automatic_lock_clears_typed_and_legacy_state(monkeypatch) -> None:
 
     async def scenario() -> None:
         state = _state()
-        await state.set_state(UnlockFlow.waiting_password)
-        runtime.user_states[987] = {"state": "waiting_note"}
+        await _publish_challenge(987, state, client)
         message = Message()
 
         async def handler(event, data):
@@ -229,13 +254,19 @@ def test_automatic_lock_clears_typed_and_legacy_state(monkeypatch) -> None:
         )
         data = {"state": state, "raw_state": await state.get_state()}
 
-        await runtime.LockCheckMiddleware()(handler, event, data)
+        try:
+            await runtime.LockCheckMiddleware()(handler, event, data)
 
-        assert user.last_activity is None
-        assert session.commits == 1
-        assert await state.get_state() is None
-        assert 987 not in runtime.user_states
-        assert "БОТ ЗАБЛОКИРОВАН" in message.answers[0][0]
+            assert user.last_activity is None
+            assert session.commits == 1
+            assert client.close_calls == 1
+            assert pending_challenges.current_pending_challenge_token(987) is None
+            assert await state.get_state() is None
+            assert await state.get_data() == {}
+            assert data["raw_state"] is None
+            assert "БОТ ЗАБЛОКИРОВАН" in message.answers[0][0]
+        finally:
+            await pending_challenges.clear_pending_challenges_for_user(987, state)
 
     asyncio.run(scenario())
 
@@ -255,10 +286,8 @@ def test_unlock_command_starts_typed_flow_before_prompt() -> None:
 
         async def answer(self, text, **kwargs) -> None:
             assert await state.get_state() == UnlockFlow.waiting_password.state
-            assert 987 not in commands.user_states
 
     async def scenario() -> None:
-        commands.user_states[987] = {"state": "waiting_group_name"}
         await commands.cmd_unlock(Message(), SimpleNamespace(args=None), state)
         assert await state.get_state() == UnlockFlow.waiting_password.state
 
@@ -276,7 +305,6 @@ def test_unlock_button_starts_typed_flow_before_prompt() -> None:
 
         async def edit_text(self, text, **kwargs) -> None:
             assert await state.get_state() == UnlockFlow.waiting_password.state
-            assert 987 not in features.user_states
 
     class Callback:
         from_user = SimpleNamespace(id=987)
@@ -286,7 +314,6 @@ def test_unlock_button_starts_typed_flow_before_prompt() -> None:
             return None
 
     async def scenario() -> None:
-        features.user_states[987] = {"state": "waiting_group_name"}
         await features.callback_unlock_bot(Callback(), state)
         assert await state.get_state() == UnlockFlow.waiting_password.state
 
@@ -400,12 +427,11 @@ def test_lock_button_cancels_typed_unlock_flow(monkeypatch) -> None:
     async def scenario() -> None:
         state = _state()
         await state.set_state(UnlockFlow.waiting_password)
-        features.user_states[987] = {"state": "waiting_note"}
 
         await features.callback_lock_bot(Callback(), state)
 
         assert await state.get_state() is None
-        assert 987 not in features.user_states
+        assert await state.get_data() == {}
 
     asyncio.run(scenario())
 
@@ -484,7 +510,12 @@ def test_unlock_password_is_rejected_outside_private_chat(monkeypatch) -> None:
     asyncio.run(scenario())
 
 
-def test_failed_lock_command_preserves_existing_workflow(monkeypatch) -> None:
+@pytest.mark.parametrize("workflow", ["account_add", "steam_challenge"])
+def test_failed_lock_command_preserves_existing_workflow(
+    monkeypatch,
+    workflow: str,
+) -> None:
+    from guardbot.bot import pending_challenges
     from guardbot.bot.handlers import commands
     from guardbot.bot.states import AccountAddFlow
 
@@ -515,18 +546,34 @@ def test_failed_lock_command_preserves_existing_workflow(monkeypatch) -> None:
 
     async def scenario() -> None:
         state = _state()
-        await state.set_state(AccountAddFlow.waiting_credentials)
-        commands.user_states[987] = {"state": "waiting_note"}
+        client = _ChallengeClient()
+        token = None
+        if workflow == "account_add":
+            await state.set_state(AccountAddFlow.waiting_credentials)
+        else:
+            token = await _publish_challenge(987, state, client)
+        expected_state = await state.get_state()
+        expected_data = await state.get_data()
 
-        await commands.cmd_lock(Message(), state)
+        try:
+            await commands.cmd_lock(Message(), state)
 
-        assert await state.get_state() == AccountAddFlow.waiting_credentials.state
-        assert commands.user_states[987] == {"state": "waiting_note"}
+            assert await state.get_state() == expected_state
+            assert await state.get_data() == expected_data
+            assert pending_challenges.current_pending_challenge_token(987) == token
+            assert client.close_calls == 0
+        finally:
+            await pending_challenges.clear_pending_challenges_for_user(987, state)
 
     asyncio.run(scenario())
 
 
-def test_failed_lock_callback_preserves_existing_workflow(monkeypatch) -> None:
+@pytest.mark.parametrize("workflow", ["account_add", "steam_challenge"])
+def test_failed_lock_callback_preserves_existing_workflow(
+    monkeypatch,
+    workflow: str,
+) -> None:
+    from guardbot.bot import pending_challenges
     from guardbot.bot.handlers import features
     from guardbot.bot.states import AccountAddFlow
 
@@ -557,12 +604,23 @@ def test_failed_lock_callback_preserves_existing_workflow(monkeypatch) -> None:
 
     async def scenario() -> None:
         state = _state()
-        await state.set_state(AccountAddFlow.waiting_credentials)
-        features.user_states[987] = {"state": "waiting_note"}
+        client = _ChallengeClient()
+        token = None
+        if workflow == "account_add":
+            await state.set_state(AccountAddFlow.waiting_credentials)
+        else:
+            token = await _publish_challenge(987, state, client)
+        expected_state = await state.get_state()
+        expected_data = await state.get_data()
 
-        await features.callback_lock_bot(Callback(), state)
+        try:
+            await features.callback_lock_bot(Callback(), state)
 
-        assert await state.get_state() == AccountAddFlow.waiting_credentials.state
-        assert features.user_states[987] == {"state": "waiting_note"}
+            assert await state.get_state() == expected_state
+            assert await state.get_data() == expected_data
+            assert pending_challenges.current_pending_challenge_token(987) == token
+            assert client.close_calls == 0
+        finally:
+            await pending_challenges.clear_pending_challenges_for_user(987, state)
 
     asyncio.run(scenario())

@@ -18,6 +18,29 @@ def _state() -> FSMContext:
     )
 
 
+class _ChallengeClient:
+    def __init__(self) -> None:
+        self.close_calls = 0
+
+    async def close(self) -> None:
+        self.close_calls += 1
+
+
+async def _publish_challenge(user_id: int, state, client) -> str:
+    from guardbot.bot import pending_challenges
+    from guardbot.bot.states import SteamChallengeFlow
+
+    return await pending_challenges.publish_pending_challenge(
+        user_id=user_id,
+        mafile_id=42,
+        kind="email",
+        client=client,
+        state=state,
+        fsm_state=SteamChallengeFlow.waiting_code,
+        ttl_seconds=60,
+    )
+
+
 class _Session:
     async def __aenter__(self):
         return self
@@ -74,7 +97,7 @@ class _Callback:
 
 
 def test_custom_sell_callback_starts_typed_flow_before_prompt(monkeypatch) -> None:
-    from guardbot.bot import runtime
+    from guardbot.bot import pending_challenges, runtime
     from guardbot.bot.states import CustomPriceFlow
 
     async def proxy_available(*_args, **_kwargs):
@@ -93,17 +116,16 @@ def test_custom_sell_callback_starts_typed_flow_before_prompt(monkeypatch) -> No
 
     async def scenario() -> None:
         state = _state()
+        client = _ChallengeClient()
+        await _publish_challenge(USER_ID, state, client)
         await state.update_data(stale=True)
-        runtime.user_states[USER_ID] = {
-            "state": "waiting_unique_proxy",
-            "mafile_id": 9,
-        }
         callback = _Callback(state)
 
         try:
             await runtime.callback_sell_item(callback, state)
 
-            assert USER_ID not in runtime.user_states
+            assert client.close_calls == 1
+            assert pending_challenges.current_pending_challenge_token(USER_ID) is None
             assert await state.get_state() == CustomPriceFlow.waiting_price.state
             assert await state.get_data() == {
                 "mafile_id": 42,
@@ -115,7 +137,7 @@ def test_custom_sell_callback_starts_typed_flow_before_prompt(monkeypatch) -> No
                 CustomPriceFlow.waiting_price.state
             ]
         finally:
-            runtime.user_states.pop(USER_ID, None)
+            await pending_challenges.clear_pending_challenges_for_user(USER_ID, state)
 
     asyncio.run(scenario())
 
@@ -497,7 +519,6 @@ def test_inventory_cancel_clears_custom_price_before_proxy_check(monkeypatch) ->
 
 
 def test_cancel_to_start_clears_custom_price_before_database(monkeypatch) -> None:
-    from guardbot.bot import runtime
     from guardbot.bot.handlers import common
     from guardbot.bot.states import CustomPriceFlow
 
@@ -507,7 +528,6 @@ def test_cancel_to_start_clears_custom_price_before_database(monkeypatch) -> Non
         async def __aenter__(self):
             assert await holder["state"].get_state() is None
             assert await holder["state"].get_data() == {}
-            assert USER_ID not in runtime.user_states
             raise RuntimeError("stop before database")
 
         async def __aexit__(self, *_args):
@@ -540,7 +560,6 @@ def test_cancel_to_start_clears_custom_price_before_database(monkeypatch) -> Non
             "assetid": "51107204438",
             "context_id": 2,
         })
-        runtime.user_states[USER_ID] = {"state": "waiting_unique_proxy"}
 
         try:
             with pytest.raises(RuntimeError, match="stop before database"):
@@ -548,9 +567,8 @@ def test_cancel_to_start_clears_custom_price_before_database(monkeypatch) -> Non
 
             assert await state.get_state() is None
             assert await state.get_data() == {}
-            assert USER_ID not in runtime.user_states
         finally:
-            runtime.user_states.pop(USER_ID, None)
+            await state.clear()
 
     asyncio.run(scenario())
 

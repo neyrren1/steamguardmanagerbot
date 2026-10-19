@@ -22,6 +22,32 @@ class FakeState:
     async def get_data(self) -> dict:
         return dict(self.data)
 
+    async def get_state(self):
+        return self.state
+
+
+class _ChallengeClient:
+    def __init__(self) -> None:
+        self.close_calls = 0
+
+    async def close(self) -> None:
+        self.close_calls += 1
+
+
+async def _publish_challenge(user_id: int, state, client) -> str:
+    from guardbot.bot import pending_challenges
+    from guardbot.bot.states import SteamChallengeFlow
+
+    return await pending_challenges.publish_pending_challenge(
+        user_id=user_id,
+        mafile_id=42,
+        kind="email",
+        client=client,
+        state=state,
+        fsm_state=SteamChallengeFlow.waiting_code,
+        ttl_seconds=60,
+    )
+
 
 class PromptMessage:
     def __init__(self, state: FakeState) -> None:
@@ -43,7 +69,7 @@ def test_login_password_flow_has_typed_state() -> None:
 
 
 def test_enter_password_callback_starts_typed_flow_before_prompt(monkeypatch) -> None:
-    from guardbot.bot import runtime
+    from guardbot.bot import pending_challenges
     from guardbot.bot.handlers import accounts
     from guardbot.bot.states import LoginPasswordFlow
 
@@ -81,26 +107,30 @@ def test_enter_password_callback_starts_typed_flow_before_prompt(monkeypatch) ->
             AssertionError("collecting a local password must not require proxy")
         ),
     )
-    runtime.user_states[user_id] = {"state": "waiting_email_code"}
+    client = _ChallengeClient()
 
     async def scenario() -> None:
+        await _publish_challenge(user_id, state, client)
         try:
             await accounts.callback_enter_password(callback, state)
 
-            assert user_id not in runtime.user_states
+            assert client.close_calls == 1
+            assert pending_challenges.current_pending_challenge_token(user_id) is None
             assert state.state == LoginPasswordFlow.waiting_password.state
             assert state.data == {"mafile_id": 42}
             assert message.snapshots == [
                 (LoginPasswordFlow.waiting_password.state, {"mafile_id": 42})
             ]
         finally:
-            await runtime.clear_legacy_user_state(user_id)
+            await pending_challenges.clear_pending_challenges_for_user(user_id, state)
 
     asyncio.run(scenario())
 
 
-def test_enter_password_prompt_failure_rolls_back_both_stores(monkeypatch) -> None:
-    from guardbot.bot import runtime
+def test_enter_password_prompt_failure_rolls_back_and_closes_challenge(
+    monkeypatch,
+) -> None:
+    from guardbot.bot import pending_challenges
     from guardbot.bot.handlers import accounts
 
     user_id = 812
@@ -140,9 +170,10 @@ def test_enter_password_prompt_failure_rolls_back_both_stores(monkeypatch) -> No
             AssertionError("collecting a local password must not require proxy")
         ),
     )
-    runtime.user_states[user_id] = {"state": "waiting_email_code"}
+    client = _ChallengeClient()
 
     async def scenario() -> None:
+        await _publish_challenge(user_id, state, client)
         try:
             try:
                 await accounts.callback_enter_password(callback, state)
@@ -153,9 +184,10 @@ def test_enter_password_prompt_failure_rolls_back_both_stores(monkeypatch) -> No
 
             assert state.state is None
             assert state.data == {}
-            assert user_id not in runtime.user_states
+            assert client.close_calls == 1
+            assert pending_challenges.current_pending_challenge_token(user_id) is None
         finally:
-            await runtime.clear_legacy_user_state(user_id)
+            await pending_challenges.clear_pending_challenges_for_user(user_id, state)
 
     asyncio.run(scenario())
 

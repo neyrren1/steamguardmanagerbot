@@ -144,11 +144,6 @@ _SECRET_PROMPT_CALLBACK_PREFIXES = (
     "set_unique_proxy_",
     "setup_steamguard_",
 )
-_SECRET_LEGACY_STATES = {
-    "waiting_email_code",
-    "waiting_steam_code",
-    "waiting_steam_code_or_mafile",
-}
 _SECRET_FSM_STATES = {
     AccountAddFlow.waiting_credentials.state,
     AccountMaFileImportFlow.waiting_document.state,
@@ -161,15 +156,6 @@ _SECRET_FSM_STATES = {
     SteamChallengeFlow.waiting_code.state,
     UnlockFlow.waiting_password.state,
 }
-
-_legacy_state_locks: weakref.WeakValueDictionary[int, asyncio.Lock] = (
-    weakref.WeakValueDictionary()
-)
-_retiring_legacy_resource_ids: dict[int, set[int]] = {}
-
-
-def _legacy_state_lock(user_id: int) -> asyncio.Lock:
-    return _legacy_state_locks.setdefault(user_id, asyncio.Lock())
 
 
 async def _await_cancellation_safe(awaitable):
@@ -191,60 +177,6 @@ async def _await_cancellation_safe(awaitable):
     return task.result()
 
 
-def _legacy_resource_ids(state_data: dict) -> set[int]:
-    return {
-        id(resource)
-        for key in ("client", "db_session")
-        if (resource := state_data.get(key)) is not None
-    }
-
-
-def _mark_retiring_resources(user_id: int, resource_ids: set[int]) -> None:
-    if resource_ids:
-        _retiring_legacy_resource_ids.setdefault(user_id, set()).update(resource_ids)
-
-
-def _unmark_retiring_resources(user_id: int, resource_ids: set[int]) -> None:
-    retiring = _retiring_legacy_resource_ids.get(user_id)
-    if retiring is None:
-        return
-    retiring.difference_update(resource_ids)
-    if not retiring:
-        _retiring_legacy_resource_ids.pop(user_id, None)
-
-
-async def _close_legacy_state_resources(
-    user_id: int,
-    state_data: dict,
-    *,
-    preserve_resource_ids: set[int] | None = None,
-) -> None:
-    closed_ids: set[int] = set()
-    for key in ("client", "db_session"):
-        resource = state_data.get(key)
-        if resource is None or id(resource) in closed_ids:
-            continue
-        if preserve_resource_ids and id(resource) in preserve_resource_ids:
-            continue
-        closed_ids.add(id(resource))
-        close = getattr(resource, "close", None)
-        if close is None:
-            continue
-        try:
-            result = close()
-            if inspect.isawaitable(result):
-                await result
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            logger.warning(
-                "Failed to close legacy state resource %s for user %s: %s",
-                key,
-                user_id,
-                type(exc).__name__,
-            )
-
-
 async def close_owned_resource(resource) -> None:
     """Close a live resource before cancellation can escape its owner."""
     async def close() -> None:
@@ -258,161 +190,9 @@ async def close_owned_resource(resource) -> None:
     await _await_cancellation_safe(close())
 
 
-def _schedule_legacy_state_expiry(
-    user_id: int,
-    state_data: dict,
-    ttl_seconds: float,
-) -> asyncio.Task:
-    async def expire_state() -> None:
-        try:
-            await asyncio.sleep(ttl_seconds)
-        except asyncio.CancelledError:
-            return
-        await _clear_legacy_user_state_impl(user_id, expected_state=state_data)
-
-    return asyncio.create_task(expire_state())
-
-
-async def _clear_legacy_user_state_impl(
-    user_id: int,
-    *,
-    preserve_resource_ids: set[int] | None = None,
-    expected_state: dict | None = None,
-) -> None:
-    if user_id not in user_states:
-        return
-
-    async with _legacy_state_lock(user_id):
-        state_data = user_states.get(user_id)
-        if not state_data or (
-            expected_state is not None and state_data is not expected_state
-        ):
-            return
-        user_states.pop(user_id, None)
-        expiry_task = state_data.pop("_expiry_task", None)
-        current_task = asyncio.current_task()
-        if expiry_task is not None and expiry_task is not current_task:
-            expiry_task.cancel()
-        retiring_ids = _legacy_resource_ids(state_data)
-        if preserve_resource_ids:
-            retiring_ids.difference_update(preserve_resource_ids)
-        _mark_retiring_resources(user_id, retiring_ids)
-
-    async def close_resources() -> None:
-        try:
-            await _close_legacy_state_resources(
-                user_id,
-                state_data,
-                preserve_resource_ids=preserve_resource_ids,
-            )
-        finally:
-            _unmark_retiring_resources(user_id, retiring_ids)
-
-    await _await_cancellation_safe(close_resources())
-
-
-async def clear_legacy_user_state(
-    user_id: int,
-    *,
-    preserve_resource_ids: set[int] | None = None,
-    expected_state: dict | None = None,
-) -> None:
-    """Clear a legacy flow and close live resources it stored."""
-    await _await_cancellation_safe(
-        _clear_legacy_user_state_impl(
-            user_id,
-            preserve_resource_ids=preserve_resource_ids,
-            expected_state=expected_state,
-        )
-    )
-
-
 async def clear_user_workflows(user_id: int, state: FSMContext | None) -> None:
-    """Cancellation-safely clear both transitional workflow stores."""
-
-    async def clear() -> None:
-        await clear_legacy_user_state(user_id)
-        await clear_pending_challenges_for_user(user_id, state)
-
-    await _await_cancellation_safe(clear())
-
-
-async def set_legacy_user_state(
-    user_id: int,
-    state_data: dict,
-    *,
-    ttl_seconds: float = 600,
-) -> None:
-    """Replace a legacy secret flow and expire its resources automatically."""
-    state_data["_owner_task"] = asyncio.current_task()
-
-    async def replace() -> None:
-        preserve_resource_ids = _legacy_resource_ids(state_data)
-        async with _legacy_state_lock(user_id):
-            retiring = _retiring_legacy_resource_ids.get(user_id, set())
-            if preserve_resource_ids & retiring:
-                raise RuntimeError("Cannot reuse a legacy resource being retired")
-            previous_state = user_states.get(user_id)
-            if previous_state:
-                previous_expiry = previous_state.pop("_expiry_task", None)
-                if previous_expiry is not None:
-                    previous_expiry.cancel()
-            state_data["_expiry_ttl_seconds"] = ttl_seconds
-            state_data["_expiry_task"] = _schedule_legacy_state_expiry(
-                user_id,
-                state_data,
-                ttl_seconds,
-            )
-            user_states[user_id] = state_data
-            retiring_ids = (
-                _legacy_resource_ids(previous_state) - preserve_resource_ids
-                if previous_state
-                else set()
-            )
-            _mark_retiring_resources(user_id, retiring_ids)
-
-        if previous_state:
-            try:
-                await _close_legacy_state_resources(
-                    user_id,
-                    previous_state,
-                    preserve_resource_ids=preserve_resource_ids,
-                )
-            finally:
-                _unmark_retiring_resources(user_id, retiring_ids)
-
-    await _await_cancellation_safe(replace())
-
-
-async def lease_legacy_user_state(user_id: int) -> dict | None:
-    """Pause expiry while an update actively consumes the current state."""
-    lock = _legacy_state_locks.get(user_id)
-    if lock is None and user_id not in user_states:
-        return None
-    lock = lock or _legacy_state_lock(user_id)
-    async with lock:
-        state_data = user_states.get(user_id)
-        if not state_data or state_data.get("state") not in _SECRET_LEGACY_STATES:
-            return None
-        expiry_task = state_data.pop("_expiry_task", None)
-        if expiry_task is not None:
-            expiry_task.cancel()
-        return state_data
-
-
-async def release_legacy_user_state_lease(user_id: int, state_data: dict) -> None:
-    """Re-arm expiry when the leased state still owns the workflow."""
-    async with _legacy_state_lock(user_id):
-        if user_states.get(user_id) is not state_data:
-            return
-        if state_data.get("_expiry_task") is not None:
-            return
-        ttl_seconds = state_data.get("_expiry_ttl_seconds", 600)
-        state_data["_expiry_task"] = _schedule_legacy_state_expiry(
-            user_id,
-            state_data,
-            ttl_seconds,
-        )
+    """Cancellation-safely clear the typed FSM and any live Steam challenge."""
+    await _await_cancellation_safe(clear_pending_challenges_for_user(user_id, state))
 
 
 async def delete_secret_message_or_abort(message: Message) -> bool:
@@ -474,10 +254,6 @@ class SecretStateCleanupMiddleware(BaseMiddleware):
         elif event.inline_query:
             user_id = event.inline_query.from_user.id
 
-        leased_state = None
-        if user_id is not None:
-            leased_state = await lease_legacy_user_state(user_id)
-        initial_legacy_state = user_states.get(user_id) if user_id is not None else None
         owner_task = asyncio.current_task()
         initial_challenge_token = (
             current_pending_challenge_token(user_id)
@@ -488,21 +264,6 @@ class SecretStateCleanupMiddleware(BaseMiddleware):
         try:
             return await handler(event, data)
         except (Exception, asyncio.CancelledError):
-            if user_id is not None:
-                current_state = user_states.get(user_id)
-                legacy_state = (current_state or {}).get("state")
-                owns_current_state = bool(
-                    current_state
-                    and (
-                        current_state is initial_legacy_state
-                        or current_state.get("_owner_task") is owner_task
-                    )
-                )
-                if legacy_state in _SECRET_LEGACY_STATES and owns_current_state:
-                    await clear_legacy_user_state(
-                        user_id,
-                        expected_state=current_state,
-                    )
             fsm_context = data.get("state")
             if isinstance(fsm_context, FSMContext):
                 challenge_tokens: list[str] = []
@@ -520,18 +281,6 @@ class SecretStateCleanupMiddleware(BaseMiddleware):
                     )
                 )
             raise
-        finally:
-            if user_id is not None:
-                current_state = user_states.get(user_id)
-                if (
-                    current_state is not None
-                    and current_state.get("_owner_task") is owner_task
-                ):
-                    current_state.pop("_owner_task", None)
-            if user_id is not None and leased_state is not None:
-                await _await_cancellation_safe(
-                    release_legacy_user_state_lease(user_id, leased_state)
-                )
 
 
 async def acknowledge_callback(callback: CallbackQuery) -> None:
@@ -609,12 +358,7 @@ class LockCheckMiddleware(BaseMiddleware):
                 )
                 return
 
-        # During the incremental migration, a legacy flow wins over a stale
-        # typed flow so two state stores cannot route the same input.
         fsm_context = data.get("state")
-        deferred_fsm_clear = False
-        had_legacy_state = user_id in user_states
-        legacy_state = user_states.get(user_id, {}).get("state")
         if event.callback_query:
             callback_data = event.callback_query.data or ""
             starts_secret_prompt = (
@@ -635,9 +379,6 @@ class LockCheckMiddleware(BaseMiddleware):
                     show_alert=True,
                 )
                 return
-            if legacy_state in _SECRET_LEGACY_STATES:
-                await clear_legacy_user_state(user_id)
-                legacy_state = None
         document = getattr(event.message, "document", None) if event.message else None
         document_name = (getattr(document, "file_name", None) or "").lower()
         cancel_command = None
@@ -679,9 +420,6 @@ class LockCheckMiddleware(BaseMiddleware):
                 user_id,
                 fsm_context if isinstance(fsm_context, FSMContext) else None,
             )
-            had_legacy_state = False
-            legacy_state = None
-            deferred_fsm_clear = False
             data["raw_state"] = None
         if cancel_command:
             setattr(
@@ -689,19 +427,13 @@ class LockCheckMiddleware(BaseMiddleware):
                 "_guardbot_cancelled_workflow",
                 {
                     "typed_state": data.get("raw_state"),
-                    "legacy_state": legacy_state,
-                    "had_workflow": bool(
-                        data.get("raw_state") or had_legacy_state
-                    ),
+                    "had_workflow": bool(data.get("raw_state")),
                 },
             )
             await clear_user_workflows(
                 user_id,
                 fsm_context if isinstance(fsm_context, FSMContext) else None,
             )
-            had_legacy_state = False
-            legacy_state = None
-            deferred_fsm_clear = False
             data["raw_state"] = None
         is_secret_document = bool(
             not is_foreign_bot_command
@@ -710,10 +442,7 @@ class LockCheckMiddleware(BaseMiddleware):
         is_secret_flow_message = bool(
             event.message
             and not is_foreign_bot_command
-            and (
-                legacy_state in _SECRET_LEGACY_STATES
-                or data.get("raw_state") in _SECRET_FSM_STATES
-            )
+            and data.get("raw_state") in _SECRET_FSM_STATES
         )
         if event.message and (is_secret_flow_message or is_secret_document):
             if not await delete_secret_message_or_abort(event.message):
@@ -723,28 +452,6 @@ class LockCheckMiddleware(BaseMiddleware):
                     "❌ Секретные данные можно вводить только в личном чате с ботом."
                 )
                 return
-            if (
-                legacy_state in _SECRET_LEGACY_STATES
-                and message_command_text.startswith("/")
-                and not cancel_command
-            ):
-                await clear_legacy_user_state(user_id)
-                legacy_state = None
-        if (
-            had_legacy_state
-            and data.get("raw_state")
-            and fsm_context
-            and not is_foreign_bot_command
-        ):
-            is_explicit_unlock_transition = bool(
-                event.callback_query
-                and event.callback_query.data in {"unlock_bot", "cancel_unlock"}
-            )
-            if is_explicit_unlock_transition:
-                await fsm_context.clear()
-            else:
-                deferred_fsm_clear = True
-            data["raw_state"] = None
 
         if data.get("raw_state") == UnlockFlow.waiting_password.state:
             is_password_message = bool(
@@ -915,8 +622,6 @@ class LockCheckMiddleware(BaseMiddleware):
             # active behind the newly rendered destination.
             await clear_user_workflows(user_id, fsm_context)
             data["raw_state"] = None
-        if deferred_fsm_clear and isinstance(fsm_context, FSMContext):
-            await fsm_context.clear()
         return await handler(event, data)
 
 dp = Dispatcher(
@@ -930,7 +635,6 @@ dp.update.outer_middleware(dp.fsm)
 dp.update.outer_middleware(LockCheckMiddleware())
 dp.update.outer_middleware(SecretStateCleanupMiddleware())
 
-user_states = {}
 
 def calculate_steam_price(price_float: float, currency_id: int) -> int:
     """
