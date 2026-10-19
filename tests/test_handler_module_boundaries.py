@@ -166,7 +166,7 @@ def test_confirmations_have_a_dedicated_router_and_compatibility_exports() -> No
         "callback_cancel_all",
     )
 
-    assert routing.ROUTERS.index(confirmations.router) + 1 == routing.ROUTERS.index(
+    assert routing.ROUTERS.index(confirmations.router) < routing.ROUTERS.index(
         features.router
     )
     assert routing.ROUTERS.count(confirmations.router) == 1
@@ -182,3 +182,40 @@ def test_confirmations_have_a_dedicated_router_and_compatibility_exports() -> No
             for handler in features.router.callback_query.handlers
         )
     assert _top_level_definitions(features).isdisjoint(callbacks)
+
+
+
+def test_trade_operations_have_a_dedicated_router_and_compatibility_exports() -> None:
+    from guardbot.bot import routing
+    from guardbot.bot.handlers import features, trade_operations
+
+    callbacks = (
+        "callback_trade_accept",
+        "callback_trade_decline",
+        "callback_trade_cancel_outgoing",
+        "callback_trades_incoming_active",
+        "callback_trades_incoming_history",
+        "callback_trades_outgoing_active",
+        "callback_trades_outgoing_history",
+        "callback_trade_detail_full",
+        "callback_back_to_trades_list",
+    )
+    helpers = ("fetch_and_display_trades", "fetch_and_redirect_trades")
+
+    assert routing.ROUTERS.index(trade_operations.router) + 1 == routing.ROUTERS.index(
+        features.router
+    )
+    assert routing.ROUTERS.count(trade_operations.router) == 1
+    for name in (*callbacks, *helpers):
+        assert getattr(features, name) is getattr(trade_operations, name)
+    for name in callbacks:
+        callback = getattr(trade_operations, name)
+        assert sum(
+            handler.callback is callback
+            for handler in trade_operations.router.callback_query.handlers
+        ) == 1
+        assert all(
+            handler.callback is not callback
+            for handler in features.router.callback_query.handlers
+        )
+    assert _top_level_definitions(features).isdisjoint((*callbacks, *helpers))

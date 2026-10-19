@@ -139,9 +139,17 @@ class FakeCallback:
         ("confirmations", "callback_cancel_single", "cancel_single_1_18446744073709551616", False),
         ("confirmations", "callback_confirm_all", "confirm_all_2147483648", False),
         ("confirmations", "callback_cancel_all", "cancel_all_0", False),
-        ("features", "callback_trade_accept", "trade_accept_1_2_18446744073709551616", False),
-        ("features", "callback_trade_accept", "trade_accept_1_2_None", False),
-        ("features", "callback_trade_accept", "trade_accept_1_2_https://steamcommunity.com/id/vanity", False),
+        ("trade_operations", "callback_trade_accept", "trade_accept_1_2_18446744073709551616", False),
+        ("trade_operations", "callback_trade_accept", "trade_accept_1_2_None", False),
+        ("trade_operations", "callback_trade_accept", "trade_accept_1_2_https://steamcommunity.com/id/vanity", False),
+        ("trade_operations", "callback_trade_decline", "trade_decline_1_18446744073709551616", False),
+        ("trade_operations", "callback_trade_cancel_outgoing", "trade_cancel_1_not-an-int", False),
+        ("trade_operations", "callback_trades_incoming_active", "trades_incoming_active_1_2147483648", False),
+        ("trade_operations", "callback_trades_incoming_history", "trades_incoming_history_1_0", False),
+        ("trade_operations", "callback_trades_outgoing_active", "trades_outgoing_active_2147483648_1", False),
+        ("trade_operations", "callback_trades_outgoing_history", "trades_outgoing_history_1_1_extra", False),
+        ("trade_operations", "callback_trade_detail_full", "trade_detail_full_1_2_sideways", False),
+        ("trade_operations", "callback_back_to_trades_list", "back_to_trades_list_1_sideways", False),
     ],
 )
 def test_malformed_callbacks_are_rejected_before_database(
@@ -158,6 +166,7 @@ def test_malformed_callbacks_are_rejected_before_database(
         groups,
         inventory,
         trade_notifications,
+        trade_operations,
     )
 
     module = {
@@ -167,6 +176,7 @@ def test_malformed_callbacks_are_rejected_before_database(
         "features": features,
         "inventory": inventory,
         "trade_notifications": trade_notifications,
+        "trade_operations": trade_operations,
     }[handler_path]
     handler = getattr(module, handler_name)
 
@@ -386,15 +396,15 @@ def test_notification_callback_builder_rejects_invalid_trade_identifier() -> Non
 
 def test_trade_navigation_and_html_paths_are_hardened() -> None:
     from guardbot.bot import runtime
-    from guardbot.bot.handlers import bulk_import, features, inline
+    from guardbot.bot.handlers import bulk_import, inline, trade_operations
 
-    feature_source = Path(inspect.getsourcefile(features)).read_text(encoding="utf-8")
+    trade_source = Path(inspect.getsourcefile(trade_operations)).read_text(encoding="utf-8")
     runtime_source = Path(inspect.getsourcefile(runtime)).read_text(encoding="utf-8")
     bulk_source = Path(inspect.getsourcefile(bulk_import)).read_text(encoding="utf-8")
     inline_source = Path(inspect.getsourcefile(inline)).read_text(encoding="utf-8")
 
-    assert "trades_outgoing_{mafile_id}" not in feature_source
-    assert "escape(str(e)[:" in feature_source
+    assert "trades_outgoing_{mafile_id}" not in trade_source
+    assert "escape(str(e)[:" in trade_source
     assert "escape(str(mafile.account_name))" in runtime_source
     assert "escape(partner_name)" in runtime_source
     assert "<code>{escape(mf.account_name)}</code>" in bulk_source
@@ -459,7 +469,7 @@ def test_single_confirmation_callbacks_refresh_nonce_before_action(
 
 
 def test_trade_list_escapes_hostile_steam_fields() -> None:
-    from guardbot.bot.handlers import features
+    from guardbot.bot.handlers import trade_operations
 
     class Message:
         def __init__(self) -> None:
@@ -492,7 +502,7 @@ def test_trade_list_escapes_hostile_steam_fields() -> None:
     callback = SimpleNamespace(message=message)
 
     asyncio.run(
-        features.fetch_and_display_trades(
+        trade_operations.fetch_and_display_trades(
             callback,
             1,
             Client(),
@@ -512,7 +522,7 @@ def test_trade_list_escapes_hostile_steam_fields() -> None:
 
 
 def test_trade_list_omits_oversized_external_identifier_callback() -> None:
-    from guardbot.bot.handlers import features
+    from guardbot.bot.handlers import trade_operations
 
     class Message:
         def __init__(self) -> None:
@@ -545,7 +555,7 @@ def test_trade_list_omits_oversized_external_identifier_callback() -> None:
     callback = SimpleNamespace(message=message)
 
     asyncio.run(
-        features.fetch_and_display_trades(
+        trade_operations.fetch_and_display_trades(
             callback,
             1,
             Client(),

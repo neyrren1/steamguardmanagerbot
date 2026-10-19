@@ -93,7 +93,7 @@ def test_handlers_do_not_fetch_user_owned_rows_by_primary_key_only() -> None:
 
 
 def test_trade_redirect_helper_uses_its_callback_parameter() -> None:
-    path = HANDLERS / "features.py"
+    path = HANDLERS / "trade_operations.py"
     tree = ast.parse(path.read_text(encoding="utf-8"))
     helper = next(
         node

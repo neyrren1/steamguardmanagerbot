@@ -27,6 +27,7 @@ from guardbot.bot.handlers import (
     security_controls,
     trade_link,
     trade_notifications,
+    trade_operations,
 )
 
 # ``messages`` holds the unfiltered fallback handler and must stay last.
@@ -39,6 +40,7 @@ ROUTERS: tuple[Router, ...] = (
     inventory.router,
     trade_link.router,
     confirmations.router,
+    trade_operations.router,
     features.router,
     security_controls.router,
     groups.router,
