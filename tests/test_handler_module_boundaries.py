@@ -45,7 +45,7 @@ def test_trade_notifications_have_a_dedicated_router_and_compatibility_exports()
         "process_trade_notification_interval",
     )
 
-    assert routing.ROUTERS.index(trade_notifications.router) + 1 == routing.ROUTERS.index(
+    assert routing.ROUTERS.index(trade_notifications.router) < routing.ROUTERS.index(
         features.router
     )
     assert routing.ROUTERS.count(trade_notifications.router) == 1
@@ -93,3 +93,33 @@ def test_callback_builders_are_shared_without_duplicate_implementations() -> Non
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
     assert definitions.isdisjoint(names)
+
+
+
+def test_inventory_has_a_dedicated_router_and_compatibility_exports() -> None:
+    from guardbot.bot import routing
+    from guardbot.bot.handlers import features, inventory
+
+    callbacks = (
+        "callback_inventory_menu",
+        "callback_inventory_app",
+        "callback_item_detail",
+    )
+    helpers = ("process_inventory_items_simple", "process_inventory_items")
+
+    assert routing.ROUTERS.index(inventory.router) + 1 == routing.ROUTERS.index(
+        features.router
+    )
+    assert routing.ROUTERS.count(inventory.router) == 1
+    for name in (*callbacks, *helpers):
+        assert getattr(features, name) is getattr(inventory, name)
+    for name in callbacks:
+        callback = getattr(inventory, name)
+        assert sum(
+            handler.callback is callback
+            for handler in inventory.router.callback_query.handlers
+        ) == 1
+        assert all(
+            handler.callback is not callback
+            for handler in features.router.callback_query.handlers
+        )

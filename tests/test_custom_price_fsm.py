@@ -480,7 +480,7 @@ def test_malformed_custom_price_state_clears_before_database(
 
 
 def test_inventory_cancel_clears_custom_price_before_proxy_check(monkeypatch) -> None:
-    from guardbot.bot.handlers import features
+    from guardbot.bot.handlers import inventory
     from guardbot.bot.states import CustomPriceFlow
 
     holder = {}
@@ -493,8 +493,8 @@ def test_inventory_cancel_clears_custom_price_before_proxy_check(monkeypatch) ->
     async def feedback(*_args, **_kwargs):
         return None
 
-    monkeypatch.setattr(features, "check_proxy_available", unavailable_proxy)
-    monkeypatch.setattr(features, "callback_feedback", feedback)
+    monkeypatch.setattr(inventory, "check_proxy_available", unavailable_proxy)
+    monkeypatch.setattr(inventory, "callback_feedback", feedback)
 
     async def scenario() -> None:
         state = _state()
@@ -509,7 +509,7 @@ def test_inventory_cancel_clears_custom_price_before_proxy_check(monkeypatch) ->
         callback = _Callback(state)
         callback.data = "inventory_menu_42"
 
-        await features.callback_inventory_menu(callback, state)
+        await inventory.callback_inventory_menu(callback, state)
 
         assert await state.get_state() is None
         assert await state.get_data() == {}
@@ -574,7 +574,7 @@ def test_cancel_to_start_clears_custom_price_before_database(monkeypatch) -> Non
 
 
 def test_item_detail_escapes_untrusted_steam_html(monkeypatch) -> None:
-    from guardbot.bot.handlers import features
+    from guardbot.bot.handlers import inventory
 
     hostile = '</code><a href="tg://user?id=1">x</a><code>'
     rendered = []
@@ -654,22 +654,22 @@ def test_item_detail_escapes_untrusted_steam_html(monkeypatch) -> None:
         _guardbot_acknowledged=True,
     )
 
-    monkeypatch.setattr(features, "AsyncSessionLocal", lambda: _Session())
-    monkeypatch.setattr(features, "get_owned_mafile", owned)
+    monkeypatch.setattr(inventory, "AsyncSessionLocal", lambda: _Session())
+    monkeypatch.setattr(inventory, "get_owned_mafile", owned)
     monkeypatch.setattr(
-        features.SteamSessionManager,
+        inventory.SteamSessionManager,
         "create_steam_client_from_db",
         create_client,
     )
     monkeypatch.setattr(
-        features,
+        inventory,
         "process_inventory_items_universal",
         lambda *_args: [item],
     )
-    monkeypatch.setattr(features, "get_item_price", get_price)
-    monkeypatch.setattr(features, "callback_feedback", feedback)
+    monkeypatch.setattr(inventory, "get_item_price", get_price)
+    monkeypatch.setattr(inventory, "callback_feedback", feedback)
 
-    asyncio.run(features.callback_item_detail(callback))
+    asyncio.run(inventory.callback_item_detail(callback))
 
     assert len(rendered) == 1
     text, kwargs = rendered[0]

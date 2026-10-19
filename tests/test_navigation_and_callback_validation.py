@@ -126,14 +126,14 @@ class FakeCallback:
         ("accounts", "callback_accounts_page", "accounts_page_1_extra", False),
         ("groups", "callback_view_group", "view_group_not-an-int_0", False),
         ("groups", "callback_view_group", "view_group_1", False),
-        ("features", "callback_inventory_app", "inventory_app_not-an-int_730_2_1", False),
-        ("features", "callback_inventory_app", "inventory_app_1_730_2_1_extra_tail", False),
-        ("features", "callback_inventory_app", "inventory_app_1_753_2_1", False),
+        ("inventory", "callback_inventory_app", "inventory_app_not-an-int_730_2_1", False),
+        ("inventory", "callback_inventory_app", "inventory_app_1_730_2_1_extra_tail", False),
+        ("inventory", "callback_inventory_app", "inventory_app_1_753_2_1", False),
         ("trade_notifications", "callback_trade_notifications_menu", "trade_notifications_menu_2147483648", True),
         ("trade_notifications", "callback_trade_notify_toggle", "trade_notify_toggle_²_off", True),
         ("trade_notifications", "callback_trade_notify_interval", "trade_notify_interval_2147483648", True),
-        ("features", "callback_inventory_menu", "inventory_menu_2147483648", True),
-        ("features", "callback_item_detail", "item_detail_1_2147483648_1", False),
+        ("inventory", "callback_inventory_menu", "inventory_menu_2147483648", True),
+        ("inventory", "callback_item_detail", "item_detail_1_2147483648_1", False),
         ("features", "callback_trade_accept", "trade_accept_1_2_18446744073709551616", False),
         ("features", "callback_trade_accept", "trade_accept_1_2_None", False),
         ("features", "callback_trade_accept", "trade_accept_1_2_https://steamcommunity.com/id/vanity", False),
@@ -146,12 +146,19 @@ def test_malformed_callbacks_are_rejected_before_database(
     callback_data: str,
     needs_state: bool,
 ) -> None:
-    from guardbot.bot.handlers import accounts, features, groups, trade_notifications
+    from guardbot.bot.handlers import (
+        accounts,
+        features,
+        groups,
+        inventory,
+        trade_notifications,
+    )
 
     module = {
         "accounts": accounts,
         "groups": groups,
         "features": features,
+        "inventory": inventory,
         "trade_notifications": trade_notifications,
     }[handler_path]
     handler = getattr(module, handler_name)
