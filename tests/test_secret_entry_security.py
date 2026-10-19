@@ -962,7 +962,7 @@ def test_successful_single_mafile_import_clears_terminal_state(monkeypatch) -> N
 
 
 def test_confirm_delete_escapes_account_name_after_commit(monkeypatch) -> None:
-    from guardbot.bot.handlers import accounts
+    from guardbot.bot.handlers import account_maintenance
 
     hostile_name = 'x</b><a href="https://example.invalid/">click</a><b>'
     mafile = SimpleNamespace(id=42, account_name=hostile_name)
@@ -1002,11 +1002,11 @@ def test_confirm_delete_escapes_account_name_after_commit(monkeypatch) -> None:
         _guardbot_acknowledged=True,
     )
 
-    monkeypatch.setattr(accounts, "AsyncSessionLocal", lambda: session)
-    monkeypatch.setattr(accounts, "get_owned_mafile", owned)
+    monkeypatch.setattr(account_maintenance, "AsyncSessionLocal", lambda: session)
+    monkeypatch.setattr(account_maintenance, "get_owned_mafile", owned)
 
     async def scenario() -> None:
-        await accounts.callback_confirm_delete(callback)
+        await account_maintenance.callback_confirm_delete(callback)
 
         confirmation = edits[-1][0]
         assert 'x&lt;/b&gt;&lt;a href=&quot;https://example.invalid/&quot;&gt;' in confirmation
