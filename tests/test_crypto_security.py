@@ -8,7 +8,6 @@ from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 
 from guardbot import security
-from tests.handler_source import handler_function
 from guardbot.passwords import (
     PasswordAttemptLimiter,
     PasswordRateLimitError,
@@ -17,6 +16,7 @@ from guardbot.passwords import (
     verify_bot_password,
     verify_bot_password_async,
 )
+from tests.handler_source import handler_function
 
 
 def test_encryption_fails_closed_when_not_initialized(monkeypatch) -> None:
