@@ -13,7 +13,12 @@ from aiogram.enums import ChatType
 from aiogram.fsm.context import FSMContext
 from aiogram.types import BufferedInputFile, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from guardbot.bot.callback_validation import validated_callback_data
-from guardbot.bot.handlers.accounts import callback_account_settings, callback_settings, show_accounts_page, update_account_settings_message
+from guardbot.bot.handlers.account_list import show_accounts_page
+from guardbot.bot.handlers.account_settings import (
+    callback_account_settings,
+    update_account_settings_message,
+)
+from guardbot.bot.handlers.menus import callback_settings
 from guardbot.bot.handlers.commands import build_mafile_dict
 from guardbot.bot.runtime import callback_feedback, clear_user_workflows
 from guardbot.bot.states import GroupFlow

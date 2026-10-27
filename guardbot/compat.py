@@ -22,6 +22,17 @@ from guardbot.bot.handlers.rich_demo import *
 from guardbot.bot.handlers.messages import *
 # isort: on
 
+# Names that used to reach this namespace only through incidental imports in
+# guardbot.bot.handlers.accounts; kept explicit so the tgbot API stays stable.
+from guardbot.bot.pending_challenges import (  # noqa: E402,F401
+    lease_pending_challenge,
+    pending_challenge_is_leased,
+    publish_pending_challenge,
+    read_pending_challenge_data,
+    release_pending_challenge,
+)
+from typing import cast  # noqa: E402,F401
+
 # ``router`` and the imported aiogram ``Router`` type are implementation
 # details of handler modules, not historical tgbot API names. Every wildcard
 # import above overwrites them; remove the final aliases from the compatibility

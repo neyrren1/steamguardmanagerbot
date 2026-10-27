@@ -11,7 +11,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import BufferedInputFile, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from datetime import UTC, datetime
 from guardbot.bot.callback_validation import validated_callback_data
-from guardbot.bot.handlers.accounts import callback_account_detail, callback_account_settings
+from guardbot.bot.handlers.account_settings import callback_account_detail, callback_account_settings
 from guardbot.bot.handlers.common import cmd_start_help
 from guardbot.bot.handlers.confirmations import (
     callback_confirm_all,

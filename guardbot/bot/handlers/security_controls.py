@@ -119,7 +119,7 @@ async def callback_cancel_password_to_settings(
     """Clear password-entry state before returning to settings."""
     await clear_user_workflows(callback.from_user.id, state)
     await callback_feedback(callback)
-    from guardbot.bot.handlers.accounts import update_settings_message
+    from guardbot.bot.handlers.menus import update_settings_message
 
     await update_settings_message(callback.message, callback.from_user.id)
 

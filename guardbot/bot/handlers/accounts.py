@@ -1,58 +1,42 @@
-"""Extracted from the legacy bot module without behavior changes."""
+"""Account slash commands and the guard-code refresh button.
 
-import asyncio
-import io
-import json
-from contextlib import suppress
+Every other account feature lives in a dedicated module (account_list,
+account_settings, account_proxy, account_login, steam_challenge, ...). The
+re-exports at the end keep their historical names importable from here for
+guardbot.compat (the ``tgbot`` namespace) and older imports.
+"""
+
 from html import escape
-from typing import cast
 
 from aiogram import F, Router
-from aiogram.enums import ChatType
-from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import Command, CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
-from datetime import UTC, datetime
+from datetime import datetime
 from guardbot.bot.callback_validation import validated_callback_data
-from guardbot.bot.filters import NonCommandInputFilter
 from guardbot.bot.pending_challenges import (
-    clear_owned_pending_challenge,
     current_pending_challenge_token,
-    lease_pending_challenge,
-    pending_challenge_is_leased,
-    publish_pending_challenge,
-    read_pending_challenge_data,
-    release_pending_challenge,
 )
 from guardbot.bot.runtime import (
     callback_feedback,
-    check_proxy_available,
     clear_user_workflows,
-    close_owned_resource,
-    delete_secret_message_or_abort,
-    bot,
     require_proxy,
 )
 from guardbot.bot.states import (
     AccountAddFlow,
-    AccountMaFileImportFlow,
     BulkImportFlow,
-    LoginPasswordFlow,
     NoteFlow,
     ProxyFlow,
-    SteamChallengeFlow,
 )
-from guardbot.config import STEAM_CURRENCIES, logger
-from guardbot.database import AccountGroup, AsyncSessionLocal, Mafile, User
-from guardbot.security import decrypt_value, encrypt_value
-from guardbot.services.ownership import get_owned_group, get_owned_mafile
-from guardbot.services.session_manager import SteamSessionManager
-from guardbot.steam.client import AsyncSteamMobile, InvalidCredentials, InvalidSteamGuardCode, LoginConfirmType, ProxyRequiredError, generate_device_id, parse_proxy_string, probe_proxy_external_ip, redact_proxy_url
-from sqlalchemy import func, select, text
-from sqlalchemy.ext.asyncio import AsyncSession
-from typing import Optional
+from guardbot.config import logger
+from guardbot.database import AsyncSessionLocal, Mafile, User
+from guardbot.security import decrypt_value
+from guardbot.services.ownership import get_owned_mafile
+from guardbot.steam.client import AsyncSteamMobile, generate_device_id
+from sqlalchemy import select
 import time
+from guardbot.bot.handlers.account_login import perform_login_full
+from guardbot.bot.handlers.guard_codes import generate_and_send_code
 
 router = Router(name=__name__)
 
@@ -455,77 +439,29 @@ async def cmd_cancel(message: Message, state: FSMContext):
         await message.answer("Нет активных действий для отмены.")
 
 
-from guardbot.bot.handlers.callback_ids import (  # noqa: E402,F401 - compatibility exports
-    _MAX_DATABASE_INTEGER,
-    _parse_nonnegative_callback_id,
-    _parse_positive_callback_id,
+# Historical names of handlers that moved to dedicated modules.
+# isort: off
+from guardbot.bot.handlers.account_add import (  # noqa: E402,F401
+    callback_add_account,
+    callback_cancel_state_to_accounts,
+    cmd_add_steam,
+    receive_account_credentials,
+    _start_account_add,
 )
-
-
-from guardbot.bot.handlers.menus import (  # noqa: E402,F401 - compatibility exports
-    callback_info,
-    callback_instruction,
-    callback_mafile_instruction,
-    callback_settings,
-    update_settings_message,
-)
-
-
-from guardbot.bot.handlers.account_list import (  # noqa: E402,F401 - compatibility exports
+from guardbot.bot.handlers.account_list import (  # noqa: E402,F401
     callback_accounts_page,
     callback_my_accounts,
     callback_page_info,
     show_accounts_page,
 )
-
-
-from guardbot.bot.handlers.account_settings import (  # noqa: E402,F401 - compatibility exports
-    callback_account_detail,
-    callback_account_settings,
-    callback_change_note,
-    callback_toggle_unique_proxy,
-    process_account_note,
-    reject_note_non_text,
-    update_account_settings_message,
-)
-
-
-from guardbot.bot.handlers.account_proxy import (  # noqa: E402,F401 - compatibility exports
-    callback_cancel_state_to_settings,
-    callback_change_unique_proxy,
-    callback_remove_account_proxy,
-    callback_set_unique_proxy,
-    callback_test_account_proxy,
-    receive_unique_proxy,
-    _start_unique_proxy_prompt,
-)
-
-
-from guardbot.bot.handlers.guard_codes import (  # noqa: E402,F401 - compatibility exports
-    callback_action_get_code,
-    generate_and_send_code,
-)
-
-
-from guardbot.bot.handlers.account_login import (  # noqa: E402,F401 - compatibility exports
+from guardbot.bot.handlers.account_login import (  # noqa: E402,F401
     callback_action_login,
     callback_enter_password,
     callback_try_refresh,
-    perform_login_full,
     receive_login_password,
     reject_login_password_non_text,
 )
-
-
-from guardbot.bot.handlers.steam_challenge import (  # noqa: E402,F401 - compatibility exports
-    callback_manual_code,
-    receive_manual_steam_code,
-    reject_challenge_document,
-    _STEAM_CHALLENGE_KINDS,
-)
-
-
-from guardbot.bot.handlers.account_mafile import (  # noqa: E402,F401 - compatibility exports
+from guardbot.bot.handlers.account_mafile import (  # noqa: E402,F401
     _ACCOUNT_MAFILE_ENCRYPTED_FIELDS,
     _bounded_mafile_string,
     callback_import_mafile_for,
@@ -534,19 +470,48 @@ from guardbot.bot.handlers.account_mafile import (  # noqa: E402,F401 - compatib
     receive_account_mafile,
     _validated_account_mafile,
 )
-
-
-from guardbot.bot.handlers.account_maintenance import (  # noqa: E402,F401 - compatibility exports
+from guardbot.bot.handlers.account_maintenance import (  # noqa: E402,F401
     callback_action_check_token,
     callback_confirm_delete,
     callback_delete_account,
 )
-
-
-from guardbot.bot.handlers.account_add import (  # noqa: E402,F401 - compatibility exports
-    callback_add_account,
-    callback_cancel_state_to_accounts,
-    cmd_add_steam,
-    receive_account_credentials,
-    _start_account_add,
+from guardbot.bot.handlers.account_proxy import (  # noqa: E402,F401
+    callback_cancel_state_to_settings,
+    callback_change_unique_proxy,
+    callback_remove_account_proxy,
+    callback_set_unique_proxy,
+    callback_test_account_proxy,
+    receive_unique_proxy,
+    _start_unique_proxy_prompt,
 )
+from guardbot.bot.handlers.account_settings import (  # noqa: E402,F401
+    callback_account_detail,
+    callback_account_settings,
+    callback_change_note,
+    callback_toggle_unique_proxy,
+    process_account_note,
+    reject_note_non_text,
+    update_account_settings_message,
+)
+from guardbot.bot.handlers.callback_ids import (  # noqa: E402,F401
+    _MAX_DATABASE_INTEGER,
+    _parse_nonnegative_callback_id,
+    _parse_positive_callback_id,
+)
+from guardbot.bot.handlers.guard_codes import (  # noqa: E402,F401
+    callback_action_get_code,
+)
+from guardbot.bot.handlers.menus import (  # noqa: E402,F401
+    callback_info,
+    callback_instruction,
+    callback_mafile_instruction,
+    callback_settings,
+    update_settings_message,
+)
+from guardbot.bot.handlers.steam_challenge import (  # noqa: E402,F401
+    callback_manual_code,
+    receive_manual_steam_code,
+    reject_challenge_document,
+    _STEAM_CHALLENGE_KINDS,
+)
+# isort: on

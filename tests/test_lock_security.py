@@ -588,7 +588,7 @@ def test_prompt_failures_clear_typed_state() -> None:
 
 
 def test_password_cancel_clears_typed_state(monkeypatch) -> None:
-    from guardbot.bot.handlers import accounts, features
+    from guardbot.bot.handlers import features, menus
     from guardbot.bot.states import AccountAddFlow
 
     called = False
@@ -597,7 +597,7 @@ def test_password_cancel_clears_typed_state(monkeypatch) -> None:
         nonlocal called
         called = True
 
-    monkeypatch.setattr(accounts, "update_settings_message", fake_settings)
+    monkeypatch.setattr(menus, "update_settings_message", fake_settings)
 
     class Callback:
         from_user = SimpleNamespace(id=987)
